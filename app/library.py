@@ -1612,6 +1612,7 @@ def organize_library(dry_run=False, verbose=False, detail_limit=200):
         'skipped': 0,
         'folders_deleted': 0,
         'folders_failed': 0,
+        'mutated': False,
         'errors': [],
         'details': []
     }
@@ -1751,10 +1752,12 @@ def organize_library(dry_run=False, verbose=False, detail_limit=200):
                                 app.owned = len(app.files) > 0
                             db.session.delete(file_entry)
                             db.session.commit()
+                            results['mutated'] = True
                         else:
                             update_file_path(library_path, old_path, dest_path)
                         if os.path.exists(old_path) and os.path.normpath(old_path) != os.path.normpath(dest_path):
                             os.remove(old_path)
+                            results['mutated'] = True
                         results['skipped'] += 1
                         add_detail(f"Skip duplicate; kept existing: {dest_path}.")
                         continue
@@ -1767,6 +1770,7 @@ def organize_library(dry_run=False, verbose=False, detail_limit=200):
                         shutil.move(old_path, dest_path)
                         update_file_path(library_path, old_path, dest_path)
                         results['moved'] += 1
+                        results['mutated'] = True
                         add_detail(f"Moved: {old_path} -> {dest_path}.")
                     except Exception as e:
                         logger.error(f"Failed to move {file_entry.filepath}: {e}")
@@ -1797,6 +1801,7 @@ def organize_library(dry_run=False, verbose=False, detail_limit=200):
                 try:
                     os.rmdir(d)
                     results['folders_deleted'] += 1
+                    results['mutated'] = True
                     add_detail(f"Deleted empty folder: {d}.")
                 except OSError:
                     results['folders_failed'] += 1
@@ -2311,6 +2316,7 @@ def delete_duplicates(dry_run=False, verbose=False, detail_limit=200):
                 if dup_filepath:
                     delete_file_by_filepath(dup_filepath)
                 results['deleted'] += 1
+                results['mutated'] = True
                 add_detail(
                     f"Deleted duplicate {app.app_id} v{app.app_version}: "
                     f"{dup_filepath} (ext={dup_ext}, size={dup_size})."
@@ -2331,6 +2337,7 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
         'success': True,
         'converted': 0,
         'skipped': 0,
+        'mutated': False,
         'errors': [],
         'details': []
     }
@@ -2530,6 +2537,7 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                     app.owned = True
                 _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                 db.session.commit()
+                results['mutated'] = True
                 add_detail(f"Converted and replaced: {old_path} -> {output_file}.")
             else:
                 library_path = get_library_path(source_library_id)
@@ -2545,6 +2553,7 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                         app.owned = True
                     _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                     db.session.commit()
+                    results['mutated'] = True
                     add_detail(f"Converted output already indexed: {output_file}.")
                 else:
                     new_file = Files(
@@ -2569,6 +2578,7 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                         app.owned = True
                     _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                     db.session.commit()
+                    results['mutated'] = True
                     add_detail(f"Converted: {source_path} -> {output_file}.")
 
             results['converted'] += 1
@@ -2613,6 +2623,7 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
         'success': True,
         'converted': 0,
         'skipped': 0,
+        'mutated': False,
         'errors': [],
         'details': []
     }
@@ -2788,6 +2799,7 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
                 app.owned = True
             _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
             db.session.commit()
+            results['mutated'] = True
             if verbose:
                 results['details'].append(f"Converted and replaced: {old_path} -> {output_file}.")
         else:
@@ -2804,6 +2816,7 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
                     app.owned = True
                 _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                 db.session.commit()
+                results['mutated'] = True
                 if verbose:
                     results['details'].append(f"Converted output already indexed: {output_file}.")
             else:
@@ -2829,6 +2842,7 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
                     app.owned = True
                 _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                 db.session.commit()
+                results['mutated'] = True
             if verbose:
                 results['details'].append(f"Converted: {source_path} -> {output_file}.")
 
