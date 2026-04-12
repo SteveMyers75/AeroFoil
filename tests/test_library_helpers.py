@@ -373,6 +373,70 @@ class LibraryHelperTests(unittest.TestCase):
         self.assertEqual(payload["skipped"], 0)
         self.assertFalse(any(line.startswith("Skip ") for line in payload["details"]))
 
+    @patch("app.library.os.path.getmtime")
+    @patch("app.library.os.path.exists", return_value=True)
+    @patch("app.library.Apps")
+    def test_delete_duplicates_prefers_newer_detected_version_over_extension_priority(
+        self,
+        apps_mock,
+        exists_mock,
+        getmtime_mock,
+    ):
+        app = self._make_app(1, "0100AAAA00000800", "UPDATE", 131072)
+        older_file = self._make_file(101, "X:\\library\\Example Title [0100AAAA00000800] [v65536].nsz", [app])
+        older_file.extension = "nsz"
+        older_file.size = 500
+        newer_file = self._make_file(102, "X:\\library\\Example Title [0100AAAA00000800] [v131072].nsp", [app])
+        newer_file.extension = "nsp"
+        newer_file.size = 400
+        app.files = [older_file, newer_file]
+
+        apps_mock.owned.is_.return_value = True
+        apps_mock.query.filter.return_value.all.return_value = [app]
+        getmtime_mock.side_effect = lambda path: {
+            older_file.filepath: 200,
+            newer_file.filepath: 100,
+        }[path]
+
+        result = delete_duplicates(dry_run=True, verbose=True)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["deleted"], 1)
+        self.assertIn(newer_file.filepath, result["details"][0])
+        self.assertIn(older_file.filepath, result["details"][1])
+
+    @patch("app.library.os.path.getmtime")
+    @patch("app.library.os.path.exists", return_value=True)
+    @patch("app.library.Apps")
+    def test_delete_duplicates_falls_back_to_extension_priority_without_version_tokens(
+        self,
+        apps_mock,
+        exists_mock,
+        getmtime_mock,
+    ):
+        app = self._make_app(1, "0100BBBB00000800", "UPDATE", 0)
+        preferred_file = self._make_file(201, "X:\\library\\Example Preferred [0100BBBB00000800].nsz", [app])
+        preferred_file.extension = "nsz"
+        preferred_file.size = 300
+        other_file = self._make_file(202, "X:\\library\\Example Other [0100BBBB00000800].nsp", [app])
+        other_file.extension = "nsp"
+        other_file.size = 400
+        app.files = [preferred_file, other_file]
+
+        apps_mock.owned.is_.return_value = True
+        apps_mock.query.filter.return_value.all.return_value = [app]
+        getmtime_mock.side_effect = lambda path: {
+            preferred_file.filepath: 100,
+            other_file.filepath: 200,
+        }[path]
+
+        result = delete_duplicates(dry_run=True, verbose=True)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["deleted"], 1)
+        self.assertIn(preferred_file.filepath, result["details"][0])
+        self.assertIn(other_file.filepath, result["details"][1])
+
     def test_manage_delete_orphaned_addons_api_does_not_report_skipped_items(self):
         fake_user = self._AdminUser()
 

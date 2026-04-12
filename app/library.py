@@ -2245,7 +2245,19 @@ def delete_duplicates(dry_run=False, verbose=False, detail_limit=200):
             results['details'].append(message)
             detail_count += 1
 
-    def file_rank(file_entry):
+    def _filename_duplicate_rank(app, file_entry):
+        filename = os.path.basename(str(getattr(file_entry, 'filepath', '') or ''))
+        if filename.lower().endswith('.hdf'):
+            filename = filename[:-4]
+        detected_app_id = str(titles_lib.get_app_id_from_filename(filename) or '').strip().upper()
+        detected_version = _safe_int(titles_lib.get_version_from_filename(filename), default=-1)
+        current_app_id = str(getattr(app, 'app_id', '') or '').strip().upper()
+        app_id_matches = 1 if not detected_app_id or detected_app_id == current_app_id else 0
+        version_rank = detected_version if detected_version >= 0 else _safe_int(getattr(app, 'app_version', 0))
+        return app_id_matches, version_rank
+
+    def file_rank(app, file_entry):
+        app_id_matches, version_rank = _filename_duplicate_rank(app, file_entry)
         ext = str(file_entry.extension or '').strip().lower()
         ext_priority = {
             'nsz': 5,
@@ -2259,7 +2271,7 @@ def delete_duplicates(dry_run=False, verbose=False, detail_limit=200):
                 mtime = int(os.path.getmtime(file_entry.filepath))
         except Exception:
             mtime = 0
-        return (ext_priority, mtime, _safe_int(file_entry.size), _safe_int(file_entry.id))
+        return (app_id_matches, version_rank, ext_priority, mtime, _safe_int(file_entry.size), _safe_int(file_entry.id))
 
     apps = Apps.query.filter(Apps.owned.is_(True)).all()
     for app in apps:
@@ -2267,7 +2279,7 @@ def delete_duplicates(dry_run=False, verbose=False, detail_limit=200):
         if len(app_files_list) <= 1:
             continue
 
-        ordered = sorted(app_files_list, key=file_rank, reverse=True)
+        ordered = sorted(app_files_list, key=lambda file_entry: file_rank(app, file_entry), reverse=True)
         keeper = ordered[0]
         duplicates = ordered[1:]
         add_detail(
