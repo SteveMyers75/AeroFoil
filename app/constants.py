@@ -176,6 +176,35 @@ BUILTIN_TITLE_MANUAL_OVERRIDES = {
         "bannerUrl": "https://raw.githubusercontent.com/HarbourMasters/shipofharkinian.com/9c5639c054cb3bc952760758307473a3e425fd33/public/splash_poster.jpg",
         "screenshots": [],
     },
+    # Unverified port candidates, add only after confirming the Switch NSP app ID:
+    # "TODO_APP_ID_2SHIP2HARKINIAN": {
+    #     "name": "2 Ship 2 Harkinian",
+    #     "description": "Community port of The Legend of Zelda: Majora's Mask for Nintendo Switch.",
+    #     "iconUrl": "https://github.com/user-attachments/assets/a12851e2-1eb7-428c-973c-86fdfad73dd3",
+    #     "bannerUrl": "https://github.com/user-attachments/assets/a12851e2-1eb7-428c-973c-86fdfad73dd3",
+    #     "screenshots": [],
+    # },
+    # "TODO_APP_ID_STARSHIP": {
+    #     "name": "Starship",
+    #     "description": "Community port of Star Fox 64 for Nintendo Switch.",
+    #     "iconUrl": "https://raw.githubusercontent.com/HarbourMasters/Starship/62eb5a198bc5a8806f8c1b43551cd689e929455e/logo.png",
+    #     "bannerUrl": "https://raw.githubusercontent.com/HarbourMasters/Starship/62eb5a198bc5a8806f8c1b43551cd689e929455e/nx-logo.jpg",
+    #     "screenshots": [],
+    # },
+    # "TODO_APP_ID_ALTTP": {
+    #     "name": "The Legend of Zelda - A Link to the Past",
+    #     "description": "Community port of The Legend of Zelda: A Link to the Past for Nintendo Switch.",
+    #     "iconUrl": "",
+    #     "bannerUrl": "",
+    #     "screenshots": [],
+    # },
+    # "TODO_APP_ID_SUPER_METROID_SWITCH": {
+    #     "name": "Super Metroid Switch",
+    #     "description": "Community port of Super Metroid for Nintendo Switch.",
+    #     "iconUrl": "",
+    #     "bannerUrl": "",
+    #     "screenshots": [],
+    # },
 }
 
 TINFOIL_HEADERS = [
