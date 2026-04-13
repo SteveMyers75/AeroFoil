@@ -8,6 +8,17 @@ from urllib.parse import urlencode
 
 import requests
 
+from app.downloads.update_selection import (
+    TORRENT_UPDATE_SELECTION_ERROR,
+    get_matching_update_indices,
+    poll_update_file_names,
+    preflight_has_matching_update,
+)
+from app.downloads.versioning import (
+    select_update_entry_ids,
+    select_update_file_indices as shared_select_update_file_indices,
+)
+
 logger = logging.getLogger("downloads.qbittorrent")
 AEROFOIL_MANAGED_TAG = "aerofoil"
 LEGACY_OWNFOIL_MANAGED_TAG = "ownfoil"
@@ -244,29 +255,19 @@ def _add_deluge(url, password, download_url, category, download_path, timeout_se
         torrent_hash = _extract_magnet_hash(download_url)
 
     if update_only and torrent_hash:
-        file_names = None
-        for _ in range(10):
-            ok, status = _deluge_json_rpc(
-                url,
-                password,
-                "core.get_torrent_status",
-                [torrent_hash, ["files"]],
-                timeout_seconds=timeout_seconds
-            )
-            if ok and isinstance(status, dict) and status.get("files"):
-                files = status.get("files") or []
-                file_names = [f.get("path") for f in files]
-                break
-            time.sleep(1)
-        keep_indices = _select_update_file_indices(
-            file_names or [],
+        file_names = poll_update_file_names(
+            lambda: _fetch_deluge_file_names(url, password, torrent_hash, timeout_seconds),
+            sleep_fn=time.sleep,
+        )
+        keep_indices = get_matching_update_indices(
+            file_names,
             expected_update_number=expected_update_number,
             expected_version=expected_version,
-            exclude_russian=exclude_russian
+            exclude_russian=exclude_russian,
         )
         if not keep_indices:
             _remove_deluge(url, password, torrent_hash, timeout_seconds)
-            return False, "No matching update version found in torrent.", None
+            return False, TORRENT_UPDATE_SELECTION_ERROR, None
         priorities = [0] * len(file_names or [])
         for idx in keep_indices:
             if idx < len(priorities):
@@ -305,15 +306,13 @@ def _add_qbittorrent(url, username, password, download_url, category, download_p
     temp_tag = None
     if update_only:
         preflight_files = _get_torrent_file_list(download_url, timeout_seconds)
-        if preflight_files is not None:
-            keep_ids = _select_update_file_indices(
-                preflight_files,
-                expected_update_number=expected_update_number,
-                expected_version=expected_version,
-                exclude_russian=exclude_russian
-            )
-            if not keep_ids:
-                return False, "No matching update version found in torrent.", None
+        if not preflight_has_matching_update(
+            preflight_files,
+            expected_update_number=expected_update_number,
+            expected_version=expected_version,
+            exclude_russian=exclude_russian,
+        ):
+            return False, TORRENT_UPDATE_SELECTION_ERROR, None
         temp_tag = f"aerofoil_update_{int(time.time())}_{secrets.token_hex(3)}"
     if category:
         data["category"] = category
@@ -385,7 +384,7 @@ def _add_qbittorrent(url, username, password, download_url, category, download_p
             if temp_tag:
                 _remove_qbittorrent_tag(session, base, torrent_hash, temp_tag, timeout_seconds)
             _remove_qbittorrent_with_session(session, base, torrent_hash, timeout_seconds)
-            return False, "No matching update version found in torrent.", None
+            return False, TORRENT_UPDATE_SELECTION_ERROR, None
         _resume_qbittorrent(session, base, torrent_hash, timeout_seconds)
         if temp_tag:
             _remove_qbittorrent_tag(session, base, torrent_hash, temp_tag, timeout_seconds)
@@ -408,15 +407,13 @@ def _add_transmission(url, username, password, download_url, category, download_
     preflight_files = None
     if update_only:
         preflight_files = _get_torrent_file_list(download_url, timeout_seconds)
-        if preflight_files is not None:
-            keep_ids = _select_update_file_indices(
-                preflight_files,
-                expected_update_number=expected_update_number,
-                expected_version=expected_version,
-                exclude_russian=exclude_russian
-            )
-            if not keep_ids:
-                return False, "No matching update version found in torrent.", None
+        if not preflight_has_matching_update(
+            preflight_files,
+            expected_update_number=expected_update_number,
+            expected_version=expected_version,
+            exclude_russian=exclude_russian,
+        ):
+            return False, TORRENT_UPDATE_SELECTION_ERROR, None
 
     payload = {"method": "torrent-add", "arguments": {"filename": download_url}}
     if update_only:
@@ -448,31 +445,20 @@ def _add_transmission(url, username, password, download_url, category, download_
     if update_only and not torrent_id:
         return False, "Unable to resolve torrent id for file selection.", None
     if update_only and torrent_id:
-        file_indices = None
-        file_names = None
-        for _ in range(10):
-            info_payload = {
-                "method": "torrent-get",
-                "arguments": {"fields": ["id", "files", "name"], "ids": [torrent_id]}
-            }
-            info_resp = _request(info_payload)
-            if info_resp.status_code == 200:
-                torrents = info_resp.json().get("arguments", {}).get("torrents", []) or []
-                if torrents and torrents[0].get("files"):
-                    files = torrents[0].get("files") or []
-                    file_names = [f.get("name") for f in files]
-                    file_indices = _select_update_file_indices(
-                        file_names,
-                        expected_update_number=expected_update_number,
-                        expected_version=expected_version,
-                        exclude_russian=exclude_russian
-                    )
-                    break
-            time.sleep(1)
+        file_names = poll_update_file_names(
+            lambda: _fetch_transmission_file_names(_request, torrent_id),
+            sleep_fn=time.sleep,
+        )
+        file_indices = get_matching_update_indices(
+            file_names,
+            expected_update_number=expected_update_number,
+            expected_version=expected_version,
+            exclude_russian=exclude_russian,
+        )
         if not file_indices:
             if torrent_hash:
                 _remove_transmission(url, username, password, torrent_hash, timeout_seconds)
-            return False, "No matching update version found in torrent.", None
+            return False, TORRENT_UPDATE_SELECTION_ERROR, None
         all_indices = list(range(len(file_names))) if file_names else []
         unwanted = [i for i in all_indices if i not in file_indices]
         set_payload = {
@@ -1053,114 +1039,9 @@ def _get_torrent_file_list(download_url, timeout_seconds):
     return None
 
 
-def _extract_internal_update_version(name):
-    if not name:
-        return None
-    match = re.search(r"\[v(\d+)\]", name, re.IGNORECASE)
-    if not match:
-        match = re.search(r"(?<![a-z0-9])v(\d+)(?!\.\d)", name, re.IGNORECASE)
-    if not match:
-        return None
-    try:
-        return int(match.group(1))
-    except (TypeError, ValueError):
-        return None
-
-
-def _expected_semantic_version(expected_version):
-    try:
-        value = int(expected_version)
-    except (TypeError, ValueError):
-        return None
-    if value < 0:
-        return None
-    return (
-        (value >> 16) & 0xFFFF,
-        (value >> 8) & 0xFF,
-        value & 0xFF,
-    )
-
-
-def _normalize_semantic_version_parts(parts):
-    values = [int(part) for part in (parts or [])]
-    while len(values) > 3 and values[-1] == 0:
-        values.pop()
-    if len(values) > 3:
-        return None
-    while len(values) < 3:
-        values.append(0)
-    return tuple(values)
-
-
-def _extract_semantic_versions(name):
-    out = []
-    for match in re.finditer(r"(?<![a-z0-9])(\d+(?:\.\d+){1,3})(?![a-z0-9])", str(name or ""), re.IGNORECASE):
-        try:
-            normalized = _normalize_semantic_version_parts(match.group(1).split("."))
-        except (TypeError, ValueError):
-            normalized = None
-        if normalized:
-            out.append(normalized)
-    return out
-
-
-def _collect_update_file_versions(file_entries, exclude_russian=False):
-    internal_versions = []
-    semantic_versions = []
-    for entry_id, raw_name in file_entries or []:
-        name = str(raw_name or "")
-        lowered = name.lower()
-        if exclude_russian and ("russian" in lowered or "rus" in lowered):
-            continue
-        internal_version = _extract_internal_update_version(name)
-        if internal_version is not None:
-            internal_versions.append((internal_version, entry_id))
-        for semantic_version in _extract_semantic_versions(name):
-            semantic_versions.append((semantic_version, entry_id))
-    return internal_versions, semantic_versions
-
-
-def _select_update_entry_ids(file_entries, expected_update_number=None, expected_version=None, exclude_russian=False):
-    internal_versions, semantic_versions = _collect_update_file_versions(
-        file_entries,
-        exclude_russian=exclude_russian,
-    )
-    expected_value = None
-    if expected_version is not None:
-        try:
-            expected_value = int(expected_version)
-        except (TypeError, ValueError):
-            expected_value = None
-    if expected_value and expected_value > 0:
-        exact_internal = [entry_id for version, entry_id in internal_versions if version == expected_value]
-        if exact_internal:
-            return exact_internal
-        expected_semantic = _expected_semantic_version(expected_value)
-        if expected_semantic:
-            exact_semantic = [entry_id for version, entry_id in semantic_versions if version == expected_semantic]
-            if exact_semantic:
-                return exact_semantic
-    if expected_update_number is not None and expected_update_number > 0:
-        exact_update_number = [
-            entry_id for version, entry_id in internal_versions
-            if (version // 65536) == expected_update_number
-        ]
-        if exact_update_number:
-            return exact_update_number
-    if internal_versions:
-        highest_internal = max(version for version, _entry_id in internal_versions)
-        return [entry_id for version, entry_id in internal_versions if version == highest_internal]
-    if semantic_versions:
-        highest_semantic = max(version for version, _entry_id in semantic_versions)
-        return [entry_id for version, entry_id in semantic_versions if version == highest_semantic]
-    return []
-
-
 def _select_update_file_indices(file_names, expected_update_number=None, expected_version=None, exclude_russian=False):
-    if not file_names:
-        return []
-    return _select_update_entry_ids(
-        list(enumerate(file_names)),
+    return shared_select_update_file_indices(
+        file_names,
         expected_update_number=expected_update_number,
         expected_version=expected_version,
         exclude_russian=exclude_russian,
@@ -1406,7 +1287,7 @@ def _select_qbittorrent_highest_version(session, base, torrent_hash, timeout_sec
         all_ids.append(str(file_id))
         file_entries.append((file_id, name))
     keep_ids = [
-        str(file_id) for file_id in _select_update_entry_ids(
+        str(file_id) for file_id in select_update_entry_ids(
             file_entries,
             expected_update_number=expected_update_number,
             expected_version=expected_version,
@@ -1459,6 +1340,35 @@ def _select_qbittorrent_highest_version(session, base, torrent_hash, timeout_sec
     if retry_enable:
         _set_qbittorrent_file_priority(session, base, torrent_hash, retry_enable, 1, timeout_seconds, per_file=True)
     return True
+
+
+def _fetch_deluge_file_names(url, password, torrent_hash, timeout_seconds):
+    ok, status = _deluge_json_rpc(
+        url,
+        password,
+        "core.get_torrent_status",
+        [torrent_hash, ["files"]],
+        timeout_seconds=timeout_seconds,
+    )
+    if not ok or not isinstance(status, dict) or not status.get("files"):
+        return []
+    files = status.get("files") or []
+    return [f.get("path") for f in files]
+
+
+def _fetch_transmission_file_names(request_fn, torrent_id):
+    info_payload = {
+        "method": "torrent-get",
+        "arguments": {"fields": ["id", "files", "name"], "ids": [torrent_id]},
+    }
+    info_resp = request_fn(info_payload)
+    if info_resp.status_code != 200:
+        return []
+    torrents = info_resp.json().get("arguments", {}).get("torrents", []) or []
+    if not torrents or not torrents[0].get("files"):
+        return []
+    files = torrents[0].get("files") or []
+    return [f.get("name") for f in files]
 
 
 def _set_qbittorrent_file_priority(session, base, torrent_hash, ids, priority, timeout_seconds, per_file=False):
