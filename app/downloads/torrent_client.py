@@ -72,6 +72,14 @@ def _fetch_qbittorrent_managed_items(session, base, timeout_seconds, extra_param
     return items
 
 
+def _new_client_session(username=None, password=None):
+    session = requests.Session()
+    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
+    if username or password:
+        session.auth = (username or "", password or "")
+    return session
+
+
 def test_torrent_client(client_type, url, username=None, password=None, timeout_seconds=10):
     if not url:
         return False, "Client URL is required."
@@ -135,8 +143,7 @@ def remove_torrent(client_type, url, torrent_hash, username=None, password=None,
 
 def _test_qbittorrent(url, username=None, password=None, timeout_seconds=10):
     base = url.rstrip("/")
-    session = requests.Session()
-    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
+    session = _new_client_session()
     if username or password:
         login_resp = session.post(
             f"{base}/api/v2/auth/login",
@@ -153,10 +160,7 @@ def _test_qbittorrent(url, username=None, password=None, timeout_seconds=10):
 
 def _test_transmission(url, username=None, password=None, timeout_seconds=10):
     base = url.rstrip("/")
-    session = requests.Session()
-    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
-    if username or password:
-        session.auth = (username or "", password or "")
+    session = _new_client_session(username, password)
 
     payload = {"method": "session-get"}
     resp = session.post(
@@ -180,8 +184,7 @@ def _test_transmission(url, username=None, password=None, timeout_seconds=10):
 
 def _deluge_json_rpc(url, password, method, params=None, timeout_seconds=10):
     base = url.rstrip("/")
-    session = requests.Session()
-    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
+    session = _new_client_session()
     if password is None:
         password = ""
     payload = {
@@ -291,8 +294,7 @@ def _add_deluge(url, password, download_url, category, download_path, timeout_se
 
 def _add_qbittorrent(url, username, password, download_url, category, download_path, timeout_seconds, expected_name, update_only, exclude_russian, expected_update_number, expected_version):
     base = url.rstrip("/")
-    session = requests.Session()
-    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
+    session = _new_client_session()
     if username or password:
         login_resp = session.post(
             f"{base}/api/v2/auth/login",
@@ -399,10 +401,7 @@ def _add_qbittorrent(url, username, password, download_url, category, download_p
 
 def _add_transmission(url, username, password, download_url, category, download_path, timeout_seconds, expected_name, update_only, exclude_russian, expected_update_number, expected_version):
     base = url.rstrip("/")
-    session = requests.Session()
-    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
-    if username or password:
-        session.auth = (username or "", password or "")
+    session = _new_client_session(username, password)
 
     preflight_files = None
     if update_only:
@@ -512,8 +511,7 @@ def _qb_is_active(item):
 
 def _list_active_qbittorrent(url, username, password, category, download_path, timeout_seconds):
     base = url.rstrip("/")
-    session = requests.Session()
-    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
+    session = _new_client_session()
     if username or password:
         login_resp = session.post(
             f"{base}/api/v2/auth/login",
@@ -577,10 +575,7 @@ _TRANSMISSION_STATUS = {
 
 def _list_active_transmission(url, username, password, category, download_path, timeout_seconds):
     base = url.rstrip("/")
-    session = requests.Session()
-    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
-    if username or password:
-        session.auth = (username or "", password or "")
+    session = _new_client_session(username, password)
 
     payload = {
         "method": "torrent-get",
@@ -690,8 +685,7 @@ def _list_active_deluge(url, password, category, download_path, timeout_seconds)
 
 def _list_completed_qbittorrent(url, username, password, category, download_path, timeout_seconds):
     base = url.rstrip("/")
-    session = requests.Session()
-    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
+    session = _new_client_session()
     if username or password:
         login_resp = session.post(
             f"{base}/api/v2/auth/login",
@@ -749,10 +743,7 @@ def _list_completed_qbittorrent(url, username, password, category, download_path
 
 def _list_completed_transmission(url, username, password, category, download_path, timeout_seconds):
     base = url.rstrip("/")
-    session = requests.Session()
-    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
-    if username or password:
-        session.auth = (username or "", password or "")
+    session = _new_client_session(username, password)
 
     payload = {
         "method": "torrent-get",
@@ -853,8 +844,7 @@ def _is_deluge_managed_label(label):
 
 def _remove_qbittorrent(url, username, password, torrent_hash, timeout_seconds, delete_files=False):
     base = url.rstrip("/")
-    session = requests.Session()
-    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
+    session = _new_client_session()
     if username or password:
         login_resp = session.post(
             f"{base}/api/v2/auth/login",
@@ -886,10 +876,7 @@ def _remove_qbittorrent_with_session(session, base, torrent_hash, timeout_second
 
 def _remove_transmission(url, username, password, torrent_hash, timeout_seconds, delete_files=False):
     base = url.rstrip("/")
-    session = requests.Session()
-    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
-    if username or password:
-        session.auth = (username or "", password or "")
+    session = _new_client_session(username, password)
 
     payload = {
         "method": "torrent-remove",
