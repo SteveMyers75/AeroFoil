@@ -161,6 +161,23 @@ DEFAULT_SETTINGS = {
     }
 }
 
+BUILTIN_TITLE_MANUAL_OVERRIDES = {
+    "018FCC923D8D0000": {
+        "name": "The Simpsons: Hit & Run [Port]",
+        "description": "Community port of The Simpsons: Hit & Run for Nintendo Switch. Requires the original Windows game files to run.",
+        "iconUrl": "https://static.simpsonswiki.com/images/5/5f/The_Simpsons_Hit_and_Run_cover.png",
+        "bannerUrl": "https://static.simpsonswiki.com/images/5/5f/The_Simpsons_Hit_and_Run_cover.png",
+        "screenshots": [],
+    },
+    "056783A0CC4A0000": {
+        "name": "Ship of Harkinian",
+        "description": "Open-source port of The Legend of Zelda: Ocarina of Time with modern enhancements for Nintendo Switch and other platforms.",
+        "iconUrl": "https://raw.githubusercontent.com/HarbourMasters/shipofharkinian.com/9c5639c054cb3bc952760758307473a3e425fd33/public/logo.png",
+        "bannerUrl": "https://raw.githubusercontent.com/HarbourMasters/shipofharkinian.com/9c5639c054cb3bc952760758307473a3e425fd33/public/splash_poster.jpg",
+        "screenshots": [],
+    },
+}
+
 TINFOIL_HEADERS = [
     'Theme',
     'Uid',
