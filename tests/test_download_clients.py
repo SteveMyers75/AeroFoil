@@ -920,6 +920,35 @@ class QueueRoutingTests(unittest.TestCase):
         self.assertTrue(add_nzb_mock.call_args.kwargs["exclude_russian"])
         self.assertEqual(add_nzb_mock.call_args.kwargs["expected_version"], 123)
 
+    @patch("app.downloads.client.add_torrent")
+    def test_queue_download_routes_by_client_type_when_protocol_missing(self, add_torrent_mock):
+        add_torrent_mock.return_value = (True, "ok", "abc123")
+
+        ok, message, item_id = queue_download(
+            "",
+            {
+                "type": "qbittorrent",
+                "url": "http://torrent.local",
+                "username": "user",
+                "password": "pass",
+                "category": "aerofoil",
+                "download_path": "X:\\fixture-root\\downloads",
+            },
+            "magnet:?xt=urn:btih:abcdef",
+            expected_name="Game Update",
+            update_only=True,
+            exclude_russian=True,
+            expected_version=123,
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "ok")
+        self.assertEqual(item_id, "abc123")
+        add_torrent_mock.assert_called_once()
+        self.assertEqual(add_torrent_mock.call_args.kwargs["client_type"], "qbittorrent")
+        self.assertEqual(add_torrent_mock.call_args.kwargs["download_path"], "X:\\fixture-root\\downloads")
+        self.assertTrue(add_torrent_mock.call_args.kwargs["update_only"])
+
 
 class SabSelectionTests(unittest.TestCase):
     @patch("app.downloads.usenet_client.time.sleep")
