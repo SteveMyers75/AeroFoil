@@ -80,6 +80,24 @@ def _new_client_session(username=None, password=None):
     return session
 
 
+def _transmission_request(session, base, payload, timeout_seconds):
+    resp = session.post(
+        f"{base}/transmission/rpc",
+        json=payload,
+        timeout=timeout_seconds,
+    )
+    if resp.status_code == 409:
+        session_id = resp.headers.get("X-Transmission-Session-Id")
+        if session_id:
+            session.headers.update({"X-Transmission-Session-Id": session_id})
+            resp = session.post(
+                f"{base}/transmission/rpc",
+                json=payload,
+                timeout=timeout_seconds,
+            )
+    return resp
+
+
 def test_torrent_client(client_type, url, username=None, password=None, timeout_seconds=10):
     if not url:
         return False, "Client URL is required."
@@ -163,20 +181,7 @@ def _test_transmission(url, username=None, password=None, timeout_seconds=10):
     session = _new_client_session(username, password)
 
     payload = {"method": "session-get"}
-    resp = session.post(
-        f"{base}/transmission/rpc",
-        json=payload,
-        timeout=timeout_seconds,
-    )
-    if resp.status_code == 409:
-        session_id = resp.headers.get("X-Transmission-Session-Id")
-        if session_id:
-            session.headers.update({"X-Transmission-Session-Id": session_id})
-            resp = session.post(
-                f"{base}/transmission/rpc",
-                json=payload,
-                timeout=timeout_seconds,
-            )
+    resp = _transmission_request(session, base, payload, timeout_seconds)
     if resp.status_code != 200:
         return False, f"Transmission returned {resp.status_code}."
     return True, "Transmission OK."
@@ -425,13 +430,7 @@ def _add_transmission(url, username, password, download_url, category, download_
         payload["arguments"]["download-dir"] = download_path
 
     def _request(payload_body):
-        resp = session.post(f"{base}/transmission/rpc", json=payload_body, timeout=timeout_seconds)
-        if resp.status_code == 409:
-            session_id = resp.headers.get("X-Transmission-Session-Id")
-            if session_id:
-                session.headers.update({"X-Transmission-Session-Id": session_id})
-                resp = session.post(f"{base}/transmission/rpc", json=payload_body, timeout=timeout_seconds)
-        return resp
+        return _transmission_request(session, base, payload_body, timeout_seconds)
 
     resp = _request(payload)
     if resp.status_code != 200:
@@ -587,12 +586,7 @@ def _list_active_transmission(url, username, password, category, download_path, 
             ]
         },
     }
-    resp = session.post(f"{base}/transmission/rpc", json=payload, timeout=timeout_seconds)
-    if resp.status_code == 409:
-        session_id = resp.headers.get("X-Transmission-Session-Id")
-        if session_id:
-            session.headers.update({"X-Transmission-Session-Id": session_id})
-            resp = session.post(f"{base}/transmission/rpc", json=payload, timeout=timeout_seconds)
+    resp = _transmission_request(session, base, payload, timeout_seconds)
     if resp.status_code != 200:
         return []
     torrents = resp.json().get("arguments", {}).get("torrents", []) or []
@@ -749,12 +743,7 @@ def _list_completed_transmission(url, username, password, category, download_pat
         "method": "torrent-get",
         "arguments": {"fields": ["id", "hashString", "percentDone", "labels", "downloadDir", "name"]},
     }
-    resp = session.post(f"{base}/transmission/rpc", json=payload, timeout=timeout_seconds)
-    if resp.status_code == 409:
-        session_id = resp.headers.get("X-Transmission-Session-Id")
-        if session_id:
-            session.headers.update({"X-Transmission-Session-Id": session_id})
-            resp = session.post(f"{base}/transmission/rpc", json=payload, timeout=timeout_seconds)
+    resp = _transmission_request(session, base, payload, timeout_seconds)
     if resp.status_code != 200:
         return []
     torrents = resp.json().get("arguments", {}).get("torrents", []) or []
@@ -882,12 +871,7 @@ def _remove_transmission(url, username, password, torrent_hash, timeout_seconds,
         "method": "torrent-remove",
         "arguments": {"ids": [torrent_hash], "delete-local-data": bool(delete_files)},
     }
-    resp = session.post(f"{base}/transmission/rpc", json=payload, timeout=timeout_seconds)
-    if resp.status_code == 409:
-        session_id = resp.headers.get("X-Transmission-Session-Id")
-        if session_id:
-            session.headers.update({"X-Transmission-Session-Id": session_id})
-            resp = session.post(f"{base}/transmission/rpc", json=payload, timeout=timeout_seconds)
+    resp = _transmission_request(session, base, payload, timeout_seconds)
     if resp.status_code != 200:
         return False, f"Transmission returned {resp.status_code}."
     return True, "Transmission removed torrent."
