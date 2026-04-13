@@ -13,6 +13,10 @@ from app.downloads.usenet_client import (
     remove_queue_item,
     test_sabnzbd,
 )
+from app.downloads.constants import (
+    UNSUPPORTED_CLIENT_TYPE_MESSAGE,
+    UNSUPPORTED_DOWNLOAD_PROTOCOL_MESSAGE,
+)
 
 
 TORRENT_CLIENT_TYPES = {"qbittorrent", "transmission", "deluge"}
@@ -77,7 +81,7 @@ def test_download_client(client_type, url, username=None, password=None, api_key
             api_key=api_key,
             timeout_seconds=timeout_seconds,
         )
-    return False, "Unsupported client type."
+    return False, UNSUPPORTED_CLIENT_TYPE_MESSAGE
 
 
 def queue_download(protocol, client_cfg, download_url, timeout_seconds=15, **kwargs):
@@ -105,7 +109,7 @@ def queue_download(protocol, client_cfg, download_url, timeout_seconds=15, **kwa
             timeout_seconds=timeout_seconds,
             **queue_options,
         )
-    return False, "Unsupported download protocol.", None
+    return False, UNSUPPORTED_DOWNLOAD_PROTOCOL_MESSAGE, None
 
 
 def list_active_downloads(protocol, client_cfg, timeout_seconds=15):
@@ -183,7 +187,7 @@ def remove_completed_download(protocol, client_cfg, item_id, timeout_seconds=15,
             timeout_seconds=timeout_seconds,
             delete_files=delete_files,
         )
-    return False, "Unsupported download protocol."
+    return False, UNSUPPORTED_DOWNLOAD_PROTOCOL_MESSAGE
 
 
 def remove_active_download(protocol, client_cfg, item_id, timeout_seconds=15, delete_files=False):
@@ -207,4 +211,4 @@ def remove_active_download(protocol, client_cfg, item_id, timeout_seconds=15, de
             timeout_seconds=timeout_seconds,
             delete_files=delete_files,
         )
-    return False, "Unsupported download protocol."
+    return False, UNSUPPORTED_DOWNLOAD_PROTOCOL_MESSAGE

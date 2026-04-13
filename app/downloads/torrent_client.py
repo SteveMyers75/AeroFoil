@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 
 import requests
 
+from app.downloads.constants import DOWNLOADS_USER_AGENT, UNSUPPORTED_CLIENT_TYPE_MESSAGE
 from app.downloads.update_selection import (
     TORRENT_UPDATE_SELECTION_ERROR,
     get_matching_update_indices,
@@ -23,7 +24,6 @@ logger = logging.getLogger("downloads.qbittorrent")
 AEROFOIL_MANAGED_TAG = "aerofoil"
 LEGACY_OWNFOIL_MANAGED_TAG = "ownfoil"
 MANAGED_TAGS = (AEROFOIL_MANAGED_TAG, LEGACY_OWNFOIL_MANAGED_TAG)
-DOWNLOADS_USER_AGENT = "AeroFoil/Downloads"
 
 
 def _normalize_labels(values):
@@ -82,7 +82,7 @@ def test_torrent_client(client_type, url, username=None, password=None, timeout_
         return _test_transmission(url, username, password, timeout_seconds)
     if client_type == "deluge":
         return _test_deluge(url, password, timeout_seconds)
-    return False, "Unsupported client type."
+    return False, UNSUPPORTED_CLIENT_TYPE_MESSAGE
 
 
 def add_torrent(client_type, url, username=None, password=None, download_url=None, category=None, download_path=None, timeout_seconds=15, expected_name=None, update_only=False, exclude_russian=False, expected_update_number=None, expected_version=None):
@@ -95,7 +95,7 @@ def add_torrent(client_type, url, username=None, password=None, download_url=Non
         return _add_transmission(url, username, password, download_url, category, download_path, timeout_seconds, expected_name, update_only, exclude_russian, expected_update_number, expected_version)
     if client_type == "deluge":
         return _add_deluge(url, password, download_url, category, download_path, timeout_seconds, update_only, exclude_russian, expected_update_number, expected_version)
-    return False, "Unsupported client type.", None
+    return False, UNSUPPORTED_CLIENT_TYPE_MESSAGE, None
 
 
 def list_completed(client_type, url, username=None, password=None, category=None, download_path=None, timeout_seconds=15):
@@ -130,13 +130,13 @@ def remove_torrent(client_type, url, torrent_hash, username=None, password=None,
         return _remove_transmission(url, username, password, torrent_hash, timeout_seconds, delete_files=delete_files)
     if client_type == "deluge":
         return _remove_deluge(url, password, torrent_hash, timeout_seconds, delete_files=delete_files)
-    return False, "Unsupported client type."
+    return False, UNSUPPORTED_CLIENT_TYPE_MESSAGE
 
 
 def _test_qbittorrent(url, username=None, password=None, timeout_seconds=10):
     base = url.rstrip("/")
     session = requests.Session()
-    session.headers.update({"User-Agent": "AeroFoil/Downloads"})
+    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
     if username or password:
         login_resp = session.post(
             f"{base}/api/v2/auth/login",
@@ -154,7 +154,7 @@ def _test_qbittorrent(url, username=None, password=None, timeout_seconds=10):
 def _test_transmission(url, username=None, password=None, timeout_seconds=10):
     base = url.rstrip("/")
     session = requests.Session()
-    session.headers.update({"User-Agent": "AeroFoil/Downloads"})
+    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
     if username or password:
         session.auth = (username or "", password or "")
 
@@ -181,7 +181,7 @@ def _test_transmission(url, username=None, password=None, timeout_seconds=10):
 def _deluge_json_rpc(url, password, method, params=None, timeout_seconds=10):
     base = url.rstrip("/")
     session = requests.Session()
-    session.headers.update({"User-Agent": "AeroFoil/Downloads"})
+    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
     if password is None:
         password = ""
     payload = {
@@ -292,7 +292,7 @@ def _add_deluge(url, password, download_url, category, download_path, timeout_se
 def _add_qbittorrent(url, username, password, download_url, category, download_path, timeout_seconds, expected_name, update_only, exclude_russian, expected_update_number, expected_version):
     base = url.rstrip("/")
     session = requests.Session()
-    session.headers.update({"User-Agent": "AeroFoil/Downloads"})
+    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
     if username or password:
         login_resp = session.post(
             f"{base}/api/v2/auth/login",
@@ -400,7 +400,7 @@ def _add_qbittorrent(url, username, password, download_url, category, download_p
 def _add_transmission(url, username, password, download_url, category, download_path, timeout_seconds, expected_name, update_only, exclude_russian, expected_update_number, expected_version):
     base = url.rstrip("/")
     session = requests.Session()
-    session.headers.update({"User-Agent": "AeroFoil/Downloads"})
+    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
     if username or password:
         session.auth = (username or "", password or "")
 
@@ -513,7 +513,7 @@ def _qb_is_active(item):
 def _list_active_qbittorrent(url, username, password, category, download_path, timeout_seconds):
     base = url.rstrip("/")
     session = requests.Session()
-    session.headers.update({"User-Agent": "AeroFoil/Downloads"})
+    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
     if username or password:
         login_resp = session.post(
             f"{base}/api/v2/auth/login",
@@ -578,7 +578,7 @@ _TRANSMISSION_STATUS = {
 def _list_active_transmission(url, username, password, category, download_path, timeout_seconds):
     base = url.rstrip("/")
     session = requests.Session()
-    session.headers.update({"User-Agent": "AeroFoil/Downloads"})
+    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
     if username or password:
         session.auth = (username or "", password or "")
 
@@ -691,7 +691,7 @@ def _list_active_deluge(url, password, category, download_path, timeout_seconds)
 def _list_completed_qbittorrent(url, username, password, category, download_path, timeout_seconds):
     base = url.rstrip("/")
     session = requests.Session()
-    session.headers.update({"User-Agent": "AeroFoil/Downloads"})
+    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
     if username or password:
         login_resp = session.post(
             f"{base}/api/v2/auth/login",
@@ -750,7 +750,7 @@ def _list_completed_qbittorrent(url, username, password, category, download_path
 def _list_completed_transmission(url, username, password, category, download_path, timeout_seconds):
     base = url.rstrip("/")
     session = requests.Session()
-    session.headers.update({"User-Agent": "AeroFoil/Downloads"})
+    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
     if username or password:
         session.auth = (username or "", password or "")
 
@@ -854,7 +854,7 @@ def _is_deluge_managed_label(label):
 def _remove_qbittorrent(url, username, password, torrent_hash, timeout_seconds, delete_files=False):
     base = url.rstrip("/")
     session = requests.Session()
-    session.headers.update({"User-Agent": "AeroFoil/Downloads"})
+    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
     if username or password:
         login_resp = session.post(
             f"{base}/api/v2/auth/login",
@@ -887,7 +887,7 @@ def _remove_qbittorrent_with_session(session, base, torrent_hash, timeout_second
 def _remove_transmission(url, username, password, torrent_hash, timeout_seconds, delete_files=False):
     base = url.rstrip("/")
     session = requests.Session()
-    session.headers.update({"User-Agent": "AeroFoil/Downloads"})
+    session.headers.update({"User-Agent": DOWNLOADS_USER_AGENT})
     if username or password:
         session.auth = (username or "", password or "")
 

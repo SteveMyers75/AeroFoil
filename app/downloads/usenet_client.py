@@ -4,6 +4,7 @@ import time
 
 import requests
 
+from app.downloads.constants import DOWNLOADS_USER_AGENT
 from app.downloads.update_selection import (
     NZB_UPDATE_SELECTION_ERROR,
     get_matching_update_indices,
@@ -11,9 +12,6 @@ from app.downloads.update_selection import (
 )
 
 logger = logging.getLogger("downloads.sabnzbd")
-
-DOWNLOADS_USER_AGENT = "AeroFoil/Downloads"
-
 
 def test_sabnzbd(url, api_key, timeout_seconds=10):
     if not url:
