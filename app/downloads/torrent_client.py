@@ -98,6 +98,17 @@ def _transmission_request(session, base, payload, timeout_seconds):
     return resp
 
 
+def _login_qbittorrent(session, base, username=None, password=None, timeout_seconds=10):
+    if not username and not password:
+        return True
+    login_resp = session.post(
+        f"{base}/api/v2/auth/login",
+        data={"username": username or "", "password": password or ""},
+        timeout=timeout_seconds,
+    )
+    return login_resp.status_code == 200 and login_resp.text.strip() in ("Ok.", "")
+
+
 def test_torrent_client(client_type, url, username=None, password=None, timeout_seconds=10):
     if not url:
         return False, "Client URL is required."
@@ -162,14 +173,8 @@ def remove_torrent(client_type, url, torrent_hash, username=None, password=None,
 def _test_qbittorrent(url, username=None, password=None, timeout_seconds=10):
     base = url.rstrip("/")
     session = _new_client_session()
-    if username or password:
-        login_resp = session.post(
-            f"{base}/api/v2/auth/login",
-            data={"username": username or "", "password": password or ""},
-            timeout=timeout_seconds,
-        )
-        if login_resp.status_code != 200 or login_resp.text.strip() not in ("Ok.", ""):
-            return False, "qBittorrent login failed."
+    if not _login_qbittorrent(session, base, username, password, timeout_seconds):
+        return False, "qBittorrent login failed."
     version_resp = session.get(f"{base}/api/v2/app/version", timeout=timeout_seconds)
     if version_resp.status_code != 200:
         return False, f"qBittorrent returned {version_resp.status_code}."
@@ -300,14 +305,8 @@ def _add_deluge(url, password, download_url, category, download_path, timeout_se
 def _add_qbittorrent(url, username, password, download_url, category, download_path, timeout_seconds, expected_name, update_only, exclude_russian, expected_update_number, expected_version):
     base = url.rstrip("/")
     session = _new_client_session()
-    if username or password:
-        login_resp = session.post(
-            f"{base}/api/v2/auth/login",
-            data={"username": username or "", "password": password or ""},
-            timeout=timeout_seconds,
-        )
-        if login_resp.status_code != 200 or login_resp.text.strip() not in ("Ok.", ""):
-            return False, "qBittorrent login failed.", None
+    if not _login_qbittorrent(session, base, username, password, timeout_seconds):
+        return False, "qBittorrent login failed.", None
 
     data = {"urls": download_url}
     temp_tag = None
@@ -511,14 +510,8 @@ def _qb_is_active(item):
 def _list_active_qbittorrent(url, username, password, category, download_path, timeout_seconds):
     base = url.rstrip("/")
     session = _new_client_session()
-    if username or password:
-        login_resp = session.post(
-            f"{base}/api/v2/auth/login",
-            data={"username": username or "", "password": password or ""},
-            timeout=timeout_seconds,
-        )
-        if login_resp.status_code != 200 or login_resp.text.strip() not in ("Ok.", ""):
-            return []
+    if not _login_qbittorrent(session, base, username, password, timeout_seconds):
+        return []
 
     items = _fetch_qbittorrent_managed_items(
         session,
@@ -680,14 +673,8 @@ def _list_active_deluge(url, password, category, download_path, timeout_seconds)
 def _list_completed_qbittorrent(url, username, password, category, download_path, timeout_seconds):
     base = url.rstrip("/")
     session = _new_client_session()
-    if username or password:
-        login_resp = session.post(
-            f"{base}/api/v2/auth/login",
-            data={"username": username or "", "password": password or ""},
-            timeout=timeout_seconds,
-        )
-        if login_resp.status_code != 200 or login_resp.text.strip() not in ("Ok.", ""):
-            return []
+    if not _login_qbittorrent(session, base, username, password, timeout_seconds):
+        return []
 
     def fetch_with_params(extra_params=None):
         params = extra_params or {}
@@ -834,14 +821,8 @@ def _is_deluge_managed_label(label):
 def _remove_qbittorrent(url, username, password, torrent_hash, timeout_seconds, delete_files=False):
     base = url.rstrip("/")
     session = _new_client_session()
-    if username or password:
-        login_resp = session.post(
-            f"{base}/api/v2/auth/login",
-            data={"username": username or "", "password": password or ""},
-            timeout=timeout_seconds,
-        )
-        if login_resp.status_code != 200 or login_resp.text.strip() not in ("Ok.", ""):
-            return False, "qBittorrent login failed."
+    if not _login_qbittorrent(session, base, username, password, timeout_seconds):
+        return False, "qBittorrent login failed."
     resp = session.post(
         f"{base}/api/v2/torrents/delete",
         data={"hashes": torrent_hash, "deleteFiles": "true" if delete_files else "false"},
