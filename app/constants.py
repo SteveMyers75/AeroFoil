@@ -176,6 +176,20 @@ BUILTIN_TITLE_MANUAL_OVERRIDES = {
         "bannerUrl": "https://raw.githubusercontent.com/HarbourMasters/shipofharkinian.com/9c5639c054cb3bc952760758307473a3e425fd33/public/splash_poster.jpg",
         "screenshots": [],
     },
+    "0500D22512158000": {
+        "name": "Sonic Dimensions",
+        "description": "Fan-made homebrew port of the 2D Sonic fangame Sonic Dimensions for Nintendo Switch.",
+        "iconUrl": "https://dlhb.gamebrew.org/switchhomebrews/images/SonicDimensionsSwitch-01.png",
+        "bannerUrl": "https://dlhb.gamebrew.org/switchhomebrews/images/SonicDimensionsSwitch-02.png",
+        "screenshots": [],
+    },
+    "010CAF78CF713000": {
+        "name": "The Legend of Zelda - A Link to the Past",
+        "description": "Community homebrew port of The Legend of Zelda: A Link to the Past for Nintendo Switch with quality-of-life and widescreen enhancements.",
+        "iconUrl": "https://dlhb.gamebrew.org/switchhomebrews/images/zeldalinktothepastnx2.png",
+        "bannerUrl": "https://dlhb.gamebrew.org/switchhomebrews/images/zeldalinktothepastnx3.png",
+        "screenshots": [],
+    },
     # Unverified port candidates, add only after confirming the Switch NSP app ID:
     # "TODO_APP_ID_2SHIP2HARKINIAN": {
     #     "name": "2 Ship 2 Harkinian",
@@ -189,13 +203,6 @@ BUILTIN_TITLE_MANUAL_OVERRIDES = {
     #     "description": "Community port of Star Fox 64 for Nintendo Switch.",
     #     "iconUrl": "https://raw.githubusercontent.com/HarbourMasters/Starship/62eb5a198bc5a8806f8c1b43551cd689e929455e/logo.png",
     #     "bannerUrl": "https://raw.githubusercontent.com/HarbourMasters/Starship/62eb5a198bc5a8806f8c1b43551cd689e929455e/nx-logo.jpg",
-    #     "screenshots": [],
-    # },
-    # "TODO_APP_ID_ALTTP": {
-    #     "name": "The Legend of Zelda - A Link to the Past",
-    #     "description": "Community port of The Legend of Zelda: A Link to the Past for Nintendo Switch.",
-    #     "iconUrl": "",
-    #     "bannerUrl": "",
     #     "screenshots": [],
     # },
     # "TODO_APP_ID_SUPER_METROID_SWITCH": {

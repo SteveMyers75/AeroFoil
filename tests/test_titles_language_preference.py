@@ -140,6 +140,20 @@ class TitlesLanguagePreferenceTests(unittest.TestCase):
         self.assertTrue(normalized['effective_manual_overrides']['056783A0CC4A0000']['iconUrl'])
         self.assertTrue(normalized['effective_manual_overrides']['056783A0CC4A0000']['bannerUrl'])
         self.assertEqual(
+            normalized['effective_manual_overrides']['0500D22512158000']['name'],
+            BUILTIN_TITLE_MANUAL_OVERRIDES['0500D22512158000']['name'],
+        )
+        self.assertTrue(normalized['effective_manual_overrides']['0500D22512158000']['description'])
+        self.assertTrue(normalized['effective_manual_overrides']['0500D22512158000']['iconUrl'])
+        self.assertTrue(normalized['effective_manual_overrides']['0500D22512158000']['bannerUrl'])
+        self.assertEqual(
+            normalized['effective_manual_overrides']['010CAF78CF713000']['name'],
+            BUILTIN_TITLE_MANUAL_OVERRIDES['010CAF78CF713000']['name'],
+        )
+        self.assertTrue(normalized['effective_manual_overrides']['010CAF78CF713000']['description'])
+        self.assertTrue(normalized['effective_manual_overrides']['010CAF78CF713000']['iconUrl'])
+        self.assertTrue(normalized['effective_manual_overrides']['010CAF78CF713000']['bannerUrl'])
+        self.assertEqual(
             normalized['effective_manual_overrides']['0100DEADBEEF0000']['name'],
             'Example Custom Title',
         )
@@ -197,6 +211,42 @@ class TitlesLanguagePreferenceTests(unittest.TestCase):
             info = titles.get_game_info(title_id)
 
         self.assertEqual(info['name'], 'Ship of Harkinian')
+        self.assertEqual(info['id'], f'{title_id} not found in titledb')
+        self.assertTrue(info['description'])
+        self.assertTrue(info['iconUrl'])
+        self.assertTrue(info['bannerUrl'])
+
+    def test_get_game_info_returns_built_in_override_for_unknown_sonic_dimensions_port(self):
+        title_id = '0500D22512158000'
+
+        with patch(
+            'app.titles.load_settings',
+            return_value={'titles': {'manual_overrides': {}}},
+        ), patch(
+            'app.titles._get_title_info_from_index',
+            return_value=None,
+        ):
+            info = titles.get_game_info(title_id)
+
+        self.assertEqual(info['name'], 'Sonic Dimensions')
+        self.assertEqual(info['id'], f'{title_id} not found in titledb')
+        self.assertTrue(info['description'])
+        self.assertTrue(info['iconUrl'])
+        self.assertTrue(info['bannerUrl'])
+
+    def test_get_game_info_returns_built_in_override_for_unknown_alttp_port(self):
+        title_id = '010CAF78CF713000'
+
+        with patch(
+            'app.titles.load_settings',
+            return_value={'titles': {'manual_overrides': {}}},
+        ), patch(
+            'app.titles._get_title_info_from_index',
+            return_value=None,
+        ):
+            info = titles.get_game_info(title_id)
+
+        self.assertEqual(info['name'], 'The Legend of Zelda - A Link to the Past')
         self.assertEqual(info['id'], f'{title_id} not found in titledb')
         self.assertTrue(info['description'])
         self.assertTrue(info['iconUrl'])
