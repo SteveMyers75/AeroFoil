@@ -1854,6 +1854,7 @@ class ManagedCompletionStateTests(unittest.TestCase):
             {"path": "C:\\tests\\completed\\Sample Release"},
             {
                 "title_id": "0100C62011050000",
+                "app_id": "0100C62011050800",
                 "title_name": "Sample Game",
                 "version": 1376256,
             },
@@ -1861,7 +1862,7 @@ class ManagedCompletionStateTests(unittest.TestCase):
 
         self.assertIsNone(reason)
         self.assertIn("Updates\\v983040", _normalize_fixture_path(moved_path))
-        self.assertIn("[UPDATE][v983040].nsp", _normalize_fixture_path(moved_path))
+        self.assertIn("Sample Game [0100C62011050800] [UPDATE][v983040].nsp", _normalize_fixture_path(moved_path))
         move_mock.assert_called_once_with(
             "C:\\tests\\completed\\sample_v983040.nsp.hdf",
             moved_path,
