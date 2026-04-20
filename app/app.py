@@ -6247,12 +6247,18 @@ def shop_icon_api(title_id):
     titles.load_titledb()
     try:
         info = titles.get_game_info(title_id)
+        if (not (info or {}).get('iconUrl')) and hasattr(titles, '_build_local_fallback_info'):
+            try:
+                titles._build_local_fallback_info(title_id)
+            except Exception:
+                pass
+            info = titles.get_game_info(title_id)
     finally:
         titles.release_titledb()
     icon_url = info.get('iconUrl') if info else ''
     if not icon_url:
         response = send_from_directory(app.static_folder, 'placeholder-icon.svg')
-        response.headers['Cache-Control'] = 'public, max-age=3600'
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
         if _is_cyberfoil_request():
             _log_access(
                 kind='shop_media',
@@ -6267,7 +6273,7 @@ def shop_icon_api(title_id):
     cache_name, cache_path = _ensure_cached_media_file(cache_dir, title_id, icon_url)
     if not cache_path:
         response = send_from_directory(app.static_folder, 'placeholder-icon.svg')
-        response.headers['Cache-Control'] = 'public, max-age=3600'
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
         if _is_cyberfoil_request():
             _log_access(
                 kind='shop_media',
@@ -6323,7 +6329,7 @@ def shop_icon_api(title_id):
         return response
 
     response = send_from_directory(app.static_folder, 'placeholder-icon.svg')
-    response.headers['Cache-Control'] = 'public, max-age=3600'
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
     if _is_cyberfoil_request():
         _log_access(
             kind='shop_media',
@@ -6399,12 +6405,18 @@ def shop_banner_api(title_id):
     titles.load_titledb()
     try:
         info = titles.get_game_info(title_id)
+        if (not (info or {}).get('bannerUrl')) and hasattr(titles, '_build_local_fallback_info'):
+            try:
+                titles._build_local_fallback_info(title_id)
+            except Exception:
+                pass
+            info = titles.get_game_info(title_id)
     finally:
         titles.release_titledb()
     banner_url = info.get('bannerUrl') if info else ''
     if not banner_url:
         response = send_from_directory(app.static_folder, 'placeholder-banner.svg')
-        response.headers['Cache-Control'] = 'public, max-age=3600'
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
         if _is_cyberfoil_request():
             _log_access(
                 kind='shop_media',
@@ -6419,7 +6431,7 @@ def shop_banner_api(title_id):
     cache_name, cache_path = _ensure_cached_media_file(cache_dir, title_id, banner_url)
     if not cache_path:
         response = send_from_directory(app.static_folder, 'placeholder-banner.svg')
-        response.headers['Cache-Control'] = 'public, max-age=3600'
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
         if _is_cyberfoil_request():
             _log_access(
                 kind='shop_media',
@@ -6475,7 +6487,7 @@ def shop_banner_api(title_id):
         return response
 
     response = send_from_directory(app.static_folder, 'placeholder-banner.svg')
-    response.headers['Cache-Control'] = 'public, max-age=3600'
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
     if _is_cyberfoil_request():
         _log_access(
             kind='shop_media',

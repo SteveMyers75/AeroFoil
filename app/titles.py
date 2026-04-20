@@ -9,6 +9,7 @@ import unicodedata
 import requests
 import threading
 import time
+import shutil
 from contextlib import contextmanager
 
 from app import titledb
@@ -133,6 +134,9 @@ _english_title_lookup_cache = {}
 _english_title_lookup_cache_lock = threading.Lock()
 _TITLE_LOOKUP_CACHE_MAX = 4096
 _english_titles_index_ready = False
+_local_file_metadata_cache = {}
+_local_file_metadata_cache_lock = threading.Lock()
+_LOCAL_FILE_METADATA_CACHE_MAX = 2048
 
 try:
     _libc = ctypes.CDLL("libc.so.6")
@@ -184,6 +188,8 @@ def _reset_titledb_state():
         _title_lookup_cache.clear()
     with _english_title_lookup_cache_lock:
         _english_title_lookup_cache.clear()
+    with _local_file_metadata_cache_lock:
+        _local_file_metadata_cache.clear()
 
 def _load_json_file(path, label):
     try:
@@ -1144,6 +1150,8 @@ def unload_titledb():
             _title_lookup_cache.clear()
         with _english_title_lookup_cache_lock:
             _english_title_lookup_cache.clear()
+        with _local_file_metadata_cache_lock:
+            _local_file_metadata_cache.clear()
         logger.info("TitleDBs unloaded.")
 
 def identify_file_from_filename(filename):
@@ -1217,6 +1225,34 @@ def identify_file_from_cnmt(filepath):
 
     return contents
 
+def _identify_file_from_local_metadata(filepath):
+    try:
+        from app import local_file_metadata
+    except Exception:
+        return []
+
+    try:
+        parsed = local_file_metadata.extract_local_metadata(filepath)
+    except Exception:
+        return []
+    if not isinstance(parsed, dict) or not parsed:
+        return []
+
+    app_id = str(parsed.get('title_id') or '').strip().upper()
+    if not app_id:
+        return []
+    try:
+        version = int(parsed.get('version') or 0)
+    except Exception:
+        version = 0
+
+    title_id, app_type = identify_appId(app_id)
+    if not title_id:
+        title_id = app_id
+    if app_type is None:
+        app_type = APP_TYPE_BASE
+    return [(title_id, app_type, app_id, version)]
+
 def identify_file(filepath):
     filename = os.path.split(filepath)[-1]
     contents = []
@@ -1227,8 +1263,12 @@ def identify_file(filepath):
         try:
             cnmt_contents = identify_file_from_cnmt(filepath)
             if not cnmt_contents:
-                error = 'No content found in NCA containers.'
-                success = False
+                local_contents = _identify_file_from_local_metadata(filepath)
+                if local_contents:
+                    contents += local_contents
+                else:
+                    error = 'No content found in NCA containers.'
+                    success = False
             else:
                 for content in cnmt_contents:
                     app_type, app_id, version = content
@@ -1240,8 +1280,12 @@ def identify_file(filepath):
                     contents.append((title_id, app_type, app_id, version))
         except Exception as e:
             logger.error(f'Could not identify file {filepath} from metadata: {e}')
-            error = str(e)
-            success = False
+            local_contents = _identify_file_from_local_metadata(filepath)
+            if local_contents:
+                contents += local_contents
+            else:
+                error = str(e)
+                success = False
 
     else:
         identification = 'filename'
@@ -1366,6 +1410,283 @@ def _merge_preferred_title_info(base_info, preferred_info):
         merged[key] = value
     return merged
 
+
+def _set_local_file_metadata_cache(cache_key, value):
+    with _local_file_metadata_cache_lock:
+        _local_file_metadata_cache[cache_key] = value
+        if len(_local_file_metadata_cache) > _LOCAL_FILE_METADATA_CACHE_MAX:
+            try:
+                _local_file_metadata_cache.pop(next(iter(_local_file_metadata_cache)))
+            except Exception:
+                _local_file_metadata_cache.clear()
+
+
+def _get_local_metadata_language_preferences(app_settings=None):
+    settings = app_settings or load_settings()
+    titles_settings = (settings or {}).get("titles") or {}
+    language = str(titles_settings.get("language") or "en").strip().lower()
+    region = str(titles_settings.get("region") or "US").strip().upper()
+    return language, region
+
+
+def _candidate_paths_for_local_metadata_lookup(lookup_id):
+    key = str(lookup_id or "").strip().upper()
+    if not key:
+        return []
+    try:
+        from sqlalchemy import or_
+        from app.db import db, Titles, Apps, Files, app_files
+    except Exception:
+        return []
+
+    try:
+        rows = (
+            db.session.query(Files.filepath, Files.extension, Files.id)
+            .join(app_files, app_files.c.file_id == Files.id)
+            .join(Apps, Apps.id == app_files.c.app_id)
+            .join(Titles, Titles.id == Apps.title_id)
+            .filter(or_(Titles.title_id == key, Apps.app_id == key))
+            .order_by(Files.id.desc())
+            .limit(12)
+            .all()
+        )
+    except Exception:
+        return []
+
+    seen = set()
+    out = []
+    preferred_exts = {".nsp", ".xci", ".nsz", ".xcz"}
+    for row in rows:
+        filepath = str(getattr(row, "filepath", "") or "").strip()
+        if not filepath or filepath in seen:
+            continue
+        seen.add(filepath)
+        ext = str(getattr(row, "extension", "") or "").strip().lower()
+        if not ext:
+            ext = Path(filepath).suffix.lower().lstrip(".")
+        if ext and f".{ext}" not in preferred_exts:
+            continue
+        if os.path.isfile(filepath):
+            out.append(filepath)
+    return out
+
+
+def _related_title_ids_for_lookup(lookup_id):
+    key = str(lookup_id or "").strip().upper()
+    if not key:
+        return []
+    try:
+        from app.db import db, Titles, Apps
+    except Exception:
+        return []
+    try:
+        rows = (
+            db.session.query(Titles.title_id)
+            .join(Apps, Apps.title_id == Titles.id)
+            .filter(Apps.app_id == key)
+            .distinct()
+            .all()
+        )
+    except Exception:
+        return []
+    out = []
+    for row in rows:
+        tid = str(getattr(row, "title_id", "") or "").strip().upper()
+        if tid and tid != key and tid not in out:
+            out.append(tid)
+    return out
+
+
+def _cache_local_media(title_key, icon_bytes):
+    if not icon_bytes:
+        return False, False
+    icon_cached = False
+    safe_key = str(title_key or "").strip().upper()
+    if not safe_key:
+        return False, False
+
+    try:
+        icon_dir = os.path.join(CACHE_DIR, "icons")
+        os.makedirs(icon_dir, exist_ok=True)
+        icon_path = os.path.join(icon_dir, f"{safe_key}.jpg")
+        with open(icon_path, "wb") as handle:
+            handle.write(icon_bytes)
+        icon_cached = True
+    except Exception:
+        icon_cached = False
+
+    # control.nacp exposes per-language icon assets; there is no reliable
+    # equivalent local "banner" image in package metadata for most titles.
+    return icon_cached, False
+
+
+def _find_cached_media_path(title_key, media_kind):
+    key = str(title_key or "").strip().upper()
+    if not key:
+        return None
+    cache_dir = os.path.join(CACHE_DIR, media_kind)
+    try:
+        for name in os.listdir(cache_dir):
+            if str(name).upper().startswith(f"{key}."):
+                path = os.path.join(cache_dir, name)
+                if os.path.isfile(path):
+                    return path
+    except Exception:
+        return None
+    return None
+
+
+def _alias_cached_media(source_key, target_key):
+    src = str(source_key or "").strip().upper()
+    dst = str(target_key or "").strip().upper()
+    if not src or not dst or src == dst:
+        return False, False
+
+    icon_ok = False
+    banner_ok = False
+    for media_kind in ("icons", "banners"):
+        source_path = _find_cached_media_path(src, media_kind)
+        if not source_path:
+            continue
+        _, ext = os.path.splitext(source_path)
+        ext = ext or ".jpg"
+        cache_dir = os.path.join(CACHE_DIR, media_kind)
+        target_path = os.path.join(cache_dir, f"{dst}{ext}")
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            if os.path.abspath(source_path) != os.path.abspath(target_path):
+                shutil.copy2(source_path, target_path)
+            if media_kind == "icons":
+                icon_ok = True
+            else:
+                banner_ok = True
+        except Exception:
+            continue
+    return icon_ok, banner_ok
+
+
+def _build_local_fallback_info(lookup_id, _seen=None, preferred_language=None, preferred_region=None):
+    key = str(lookup_id or "").strip().upper()
+    if not key:
+        return None
+    language = str(preferred_language or "").strip().lower()
+    region = str(preferred_region or "").strip().upper()
+    if not language or not region:
+        settings_language, settings_region = _get_local_metadata_language_preferences()
+        if not language:
+            language = settings_language
+        if not region:
+            region = settings_region
+    seen = set(_seen or set())
+    if key in seen:
+        return None
+    seen.add(key)
+    cache_key = f"local_fallback:{key}:{region}:{language}"
+    with _local_file_metadata_cache_lock:
+        cached = _local_file_metadata_cache.get(cache_key)
+    if cached is not None:
+        if isinstance(cached, dict) and cached:
+            return dict(cached)
+        return None
+
+    metadata = None
+    try:
+        from app import local_file_metadata
+        for filepath in _candidate_paths_for_local_metadata_lookup(key):
+            parsed = local_file_metadata.extract_local_metadata(
+                filepath,
+                preferred_language=language,
+                preferred_region=region,
+            )
+            if isinstance(parsed, dict) and parsed:
+                metadata = parsed
+                break
+    except Exception as e:
+        logger.debug("Local fallback metadata extraction failed for %s: %s", key, e)
+
+    if not isinstance(metadata, dict) or not metadata:
+        for related_title_id in _related_title_ids_for_lookup(key):
+            related_info = None
+            related_info = _build_local_fallback_info(
+                related_title_id,
+                _seen=seen,
+                preferred_language=language,
+                preferred_region=region,
+            )
+            if not related_info:
+                try:
+                    related_info = _get_title_info_from_index(related_title_id) if _titles_index_ready else None
+                except Exception:
+                    related_info = None
+            if not isinstance(related_info, dict) or not related_info:
+                continue
+            aliased_icon, aliased_banner = _alias_cached_media(related_title_id, key)
+            bridged = {
+                "name": str(related_info.get("name") or "Unrecognized"),
+                "bannerUrl": (
+                    f"/api/shop/banner/{key}"
+                    if aliased_banner
+                    else str(related_info.get("bannerUrl") or "//placehold.it/400x200")
+                ),
+                "iconUrl": (
+                    f"/api/shop/icon/{key}"
+                    if aliased_icon
+                    else str(related_info.get("iconUrl") or "")
+                ),
+                "id": key,
+                "category": str(related_info.get("category") or ""),
+                "nsuId": related_info.get("nsuId"),
+                "description": related_info.get("description"),
+                "screenshots": list(related_info.get("screenshots") or []),
+            }
+            _set_local_file_metadata_cache(cache_key, bridged)
+            return dict(bridged)
+        return None
+
+    title_name = str(metadata.get("name") or "").strip()
+    publisher = str(metadata.get("publisher") or "").strip()
+    display_version = str(metadata.get("display_version") or "").strip()
+    icon_bytes = metadata.get("icon_bytes")
+    extracted_title_key = str(metadata.get("title_id") or "").strip().upper()
+    extracted_keys = [key]
+    if extracted_title_key and extracted_title_key not in extracted_keys:
+        extracted_keys.append(extracted_title_key)
+
+    icon_cached = False
+    banner_cached = False
+    for media_key in extracted_keys:
+        i_ok, b_ok = _cache_local_media(media_key, icon_bytes)
+        if media_key == key:
+            icon_cached = i_ok
+            banner_cached = b_ok
+    if (not icon_cached or not banner_cached) and len(extracted_keys) > 1:
+        for media_key in extracted_keys:
+            if media_key == key:
+                continue
+            i_ok, b_ok = _alias_cached_media(media_key, key)
+            icon_cached = icon_cached or i_ok
+            banner_cached = banner_cached or b_ok
+
+    description_parts = []
+    if publisher:
+        description_parts.append(f"Publisher: {publisher}")
+    if display_version:
+        description_parts.append(f"Display Version: {display_version}")
+    description = "\n".join(description_parts) if description_parts else None
+
+    info = {
+        "name": title_name or "Unrecognized",
+        "bannerUrl": f"/api/shop/banner/{key}" if banner_cached else "//placehold.it/400x200",
+        "iconUrl": f"/api/shop/icon/{key}" if icon_cached else "",
+        "id": key,
+        "category": "",
+        "nsuId": None,
+        "description": description,
+        "screenshots": [],
+    }
+    _set_local_file_metadata_cache(cache_key, info)
+    return dict(info)
+
 def get_game_info(title_id):
     global _titles_db
     global _titles_by_title_id
@@ -1373,8 +1694,12 @@ def get_game_info(title_id):
     global _english_titles_index_ready
     global _titles_desc_by_title_id
     global _titles_images_by_title_id
+    title_key = str(title_id or '').strip().upper()
     if not _titles_index_ready and _titles_db is None and _titles_by_title_id is None:
         _warn_titledb_state_once('titles_not_loaded', "titles index is not loaded. Call load_titledb first.")
+        local_info = _build_local_fallback_info(title_key)
+        if isinstance(local_info, dict) and local_info:
+            return _apply_manual_title_override(title_id, local_info)
         # Return default structure so games can still be displayed
         return _apply_manual_title_override(title_id, {
             'name': 'Unrecognized',
@@ -1388,7 +1713,6 @@ def get_game_info(title_id):
         })
 
     try:
-        title_key = str(title_id or '').strip().upper()
         title_info = _get_title_info_from_index(title_key) if _titles_index_ready else (_titles_by_title_id or {}).get(title_key)
         if title_info is None and isinstance(_titles_db, dict):
             for item in _titles_db.values():
@@ -1444,6 +1768,9 @@ def get_game_info(title_id):
                     _missing_titledb_last_log.pop(key, None)
         if should_log:
             logger.warning("Title ID not found in titledb: %s", normalized_title_id or title_id)
+        local_info = _build_local_fallback_info(title_key)
+        if isinstance(local_info, dict) and local_info:
+            return _apply_manual_title_override(title_id, local_info)
         return _apply_manual_title_override(title_id, {
             'name': 'Unrecognized',
             'bannerUrl': '//placehold.it/400x200',
