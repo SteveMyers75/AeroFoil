@@ -36,7 +36,18 @@ RUN apt-get update \
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --upgrade pip \
     && pip install --requirement /tmp/requirements.txt \
-    && rm -f /tmp/requirements.txt
+    && rm -f /tmp/requirements.txt \
+    && apt-get purge -y --auto-remove \
+        build-essential \
+        gcc \
+        libc6-dev \
+        libjpeg62-turbo-dev \
+        zlib1g-dev \
+        libffi-dev \
+        libcairo2-dev \
+        libpango1.0-dev \
+        libgdk-pixbuf-2.0-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy app code after dependencies
 COPY ./app /app

@@ -40,6 +40,7 @@ try:
         delete_orphaned_addons,
         enqueue_cleanup_roots,
         enqueue_organize_paths,
+        generate_library,
     )
     from app.titles import getDirsAndFiles
 except ModuleNotFoundError as exc:
@@ -113,6 +114,85 @@ class LibraryHelperTests(unittest.TestCase):
             [row.title_id for row in desc_rows],
             ["0100AAAA00000000", "0100BBBB00000000", "0100CCCC00000000"],
         )
+
+    @patch("app.library.get_library_cache_state_token", return_value="state-token")
+    @patch("app.library.save_library_to_disk")
+    @patch("app.library.titles_lib.get_game_info")
+    @patch("app.library.get_all_apps")
+    @patch("app.library.is_library_unchanged", return_value=False)
+    @patch("app.library.titles_lib.titledb_session")
+    @patch("app.library.db.session.query")
+    def test_generate_library_includes_files_in_cached_rows(
+        self,
+        db_query_mock,
+        titledb_session_mock,
+        is_library_unchanged_mock,
+        get_all_apps_mock,
+        get_game_info_mock,
+        save_library_to_disk_mock,
+        get_state_token_mock,
+    ):
+        app_file = SimpleNamespace(
+            filepath="X:\\fixture-root\\Example Release NSW-GRP\\Example.nsp",
+            filename="Example.nsp",
+            folder="\\Example Release NSW-GRP",
+            size=12345,
+        )
+        app_obj = SimpleNamespace(
+            app_id="0100AAAA00000000",
+            app_version="0",
+            files=[app_file],
+        )
+
+        class _AppsQuery:
+            def options(self, *_args, **_kwargs):
+                return self
+
+            def filter(self, *_args, **_kwargs):
+                return self
+
+            def all(self):
+                return [app_obj]
+
+        class _TitlesQuery:
+            def all(self):
+                return []
+
+        def _query_side_effect(*args, **kwargs):
+            if args and getattr(args[0], "__name__", "") == "Apps":
+                return _AppsQuery()
+            return _TitlesQuery()
+
+        db_query_mock.side_effect = _query_side_effect
+        titledb_session_mock.return_value.__enter__.return_value = None
+        titledb_session_mock.return_value.__exit__.return_value = False
+        get_all_apps_mock.return_value = [{
+            "id": 1,
+            "title_db_id": 1,
+            "title_id": "0100AAAA00000000",
+            "app_id": "0100AAAA00000000",
+            "app_version": "0",
+            "app_type": "BASE",
+            "owned": True,
+            "size": 12345,
+        }]
+        get_game_info_mock.return_value = {
+            "name": "Example Title",
+            "category": "Action",
+        }
+
+        library = generate_library()
+
+        self.assertEqual(len(library), 1)
+        self.assertIn("files", library[0])
+        self.assertEqual(len(library[0]["files"]), 1)
+        self.assertEqual(
+            library[0]["files"][0]["filename"],
+            "Example.nsp",
+        )
+        saved_payload = save_library_to_disk_mock.call_args[0][0]
+        self.assertEqual(saved_payload["version"], 7)
+        self.assertIn("files", saved_payload["library"][0])
 
     def test_sanitize_component(self):
         self.assertEqual(_sanitize_component('Game: Name?'), 'Game Name')

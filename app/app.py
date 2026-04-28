@@ -460,6 +460,9 @@ titledb_update_lock = threading.Lock()
 conversion_jobs = {}
 conversion_jobs_lock = threading.Lock()
 conversion_job_limit = 50
+upload_jobs = {}
+upload_jobs_lock = threading.Lock()
+upload_job_limit = 200
 library_rebuild_status = {
     'in_progress': False,
     'started_at': 0,
@@ -506,6 +509,48 @@ request_settings_sync_lock = threading.Lock()
 request_settings_last_sync_ts = 0.0
 missing_files_sweep_lock = threading.Lock()
 missing_files_last_run_ts = 0.0
+
+
+def _prune_upload_jobs_unlocked(now_ts=None):
+    now = float(now_ts if now_ts is not None else time.time())
+    stale_cutoff = now - 3600.0
+    stale_ids = [
+        job_id for job_id, job in upload_jobs.items()
+        if float(job.get('updated_at') or 0.0) < stale_cutoff
+    ]
+    for job_id in stale_ids:
+        upload_jobs.pop(job_id, None)
+    while len(upload_jobs) > upload_job_limit:
+        oldest_id = min(upload_jobs, key=lambda key: float((upload_jobs.get(key) or {}).get('updated_at') or 0.0))
+        upload_jobs.pop(oldest_id, None)
+
+
+def _set_upload_job_stage(upload_id, stage, message=None, status=None, extra=None):
+    if not upload_id:
+        return
+    now = time.time()
+    with upload_jobs_lock:
+        _prune_upload_jobs_unlocked(now)
+        job = upload_jobs.get(upload_id)
+        if job is None:
+            job = {
+                'id': upload_id,
+                'status': 'running',
+                'stage': 'starting',
+                'message': 'Starting upload...',
+                'created_at': now,
+                'updated_at': now,
+            }
+            upload_jobs[upload_id] = job
+        job['stage'] = str(stage or job.get('stage') or 'running')
+        if message is not None:
+            job['message'] = str(message)
+        if status:
+            job['status'] = str(status)
+        if isinstance(extra, dict):
+            for key, value in extra.items():
+                job[key] = value
+        job['updated_at'] = now
 
 
 def _is_conversion_running():
@@ -4803,23 +4848,31 @@ def delete_keys_file():
 @app.post('/api/upload/library')
 @access_required('admin')
 def upload_library_files():
+    upload_id = str(request.form.get('upload_id') or '').strip()
+    if not upload_id:
+        upload_id = str(uuid.uuid4())
+    _set_upload_job_stage(upload_id, 'starting', 'Preparing upload request...')
     try:
         files = request.files.getlist('files')
     except RequestEntityTooLarge:
+        _set_upload_job_stage(upload_id, 'failed', 'Upload rejected: request too large.', status='failed')
         raise
     except Exception as e:
         logger.exception("Failed to parse upload request")
         parsed_message = str(e).strip() or e.__class__.__name__
+        _set_upload_job_stage(upload_id, 'failed', f'Unable to parse upload request: {parsed_message}', status='failed')
         return jsonify({
             'success': False,
             'message': f'Unable to parse upload request: {parsed_message}',
             'uploaded': 0,
             'skipped': 0,
-            'errors': [parsed_message]
+            'errors': [parsed_message],
+            'upload_id': upload_id,
         }), 400
 
     if not files:
-        return jsonify({'success': False, 'message': 'No files uploaded.', 'uploaded': 0, 'skipped': 0, 'errors': []}), 400
+        _set_upload_job_stage(upload_id, 'failed', 'No files uploaded.', status='failed')
+        return jsonify({'success': False, 'message': 'No files uploaded.', 'uploaded': 0, 'skipped': 0, 'errors': [], 'upload_id': upload_id}), 400
 
     library_id = request.form.get('library_id')
     library_path = None
@@ -4830,18 +4883,21 @@ def upload_library_files():
         library_path = library_paths[0] if library_paths else None
 
     if not library_path:
-        return jsonify({'success': False, 'message': 'No library path configured.', 'uploaded': 0, 'skipped': 0, 'errors': []}), 400
+        _set_upload_job_stage(upload_id, 'failed', 'No library path configured.', status='failed')
+        return jsonify({'success': False, 'message': 'No library path configured.', 'uploaded': 0, 'skipped': 0, 'errors': [], 'upload_id': upload_id}), 400
 
     try:
         os.makedirs(library_path, exist_ok=True)
     except Exception as e:
         logger.error("Unable to create/access library path %s: %s", library_path, e)
+        _set_upload_job_stage(upload_id, 'failed', f'Cannot access library path: {library_path}', status='failed')
         return jsonify({
             'success': False,
             'message': f'Cannot access library path: {library_path}',
             'uploaded': 0,
             'skipped': len(files),
-            'errors': [str(e)]
+            'errors': [str(e)],
+            'upload_id': upload_id,
         }), 500
 
     allowed_exts = {'nsp', 'nsz', 'xci', 'xcz'}
@@ -4849,12 +4905,14 @@ def upload_library_files():
     skipped = 0
     errors = []
     saved_paths = []
+    _set_upload_job_stage(upload_id, 'saving', f'Saving {len(files)} file(s)...', extra={'total_files': len(files), 'uploaded': 0, 'skipped': 0})
 
-    for file in files:
+    for index, file in enumerate(files):
         filename = secure_filename(file.filename or '')
         if not filename:
             errors.append("A file has an invalid or empty filename.")
             skipped += 1
+            _set_upload_job_stage(upload_id, 'saving', f"Saving files... ({index + 1}/{len(files)})", extra={'uploaded': uploaded, 'skipped': skipped})
             continue
         
         # Validate file size (use library limit for game files)
@@ -4865,25 +4923,33 @@ def upload_library_files():
         if not is_valid_size:
             errors.append(f"{filename}: {size_error}")
             skipped += 1
+            _set_upload_job_stage(upload_id, 'saving', f"Saving files... ({index + 1}/{len(files)})", extra={'uploaded': uploaded, 'skipped': skipped})
             continue
         
         ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
         if ext not in allowed_exts:
             errors.append(f"{filename}: unsupported extension '{ext or 'none'}'.")
             skipped += 1
+            _set_upload_job_stage(upload_id, 'saving', f"Saving files... ({index + 1}/{len(files)})", extra={'uploaded': uploaded, 'skipped': skipped})
             continue
         dest_path = _ensure_unique_path(os.path.join(library_path, filename))
         try:
             file.save(dest_path)
             uploaded += 1
             saved_paths.append(dest_path)
+            _set_upload_job_stage(upload_id, 'saving', f"Saved file {index + 1}/{len(files)}: {filename}", extra={'uploaded': uploaded, 'skipped': skipped})
         except Exception as e:
             logger.error("Failed to save uploaded file %s to %s: %s", filename, library_path, e)
             errors.append(str(e))
+            skipped += 1
+            _set_upload_job_stage(upload_id, 'saving', f"Saving files... ({index + 1}/{len(files)})", extra={'uploaded': uploaded, 'skipped': skipped})
 
     if uploaded:
+        _set_upload_job_stage(upload_id, 'scanning', 'Scanning library for uploaded files...', extra={'uploaded': uploaded, 'skipped': skipped})
         scan_library_path(library_path)
+        _set_upload_job_stage(upload_id, 'queueing', 'Queueing uploaded files for organization...', extra={'uploaded': uploaded, 'skipped': skipped})
         enqueue_organize_paths(saved_paths)
+        _set_upload_job_stage(upload_id, 'refreshing', 'Refreshing library metadata...', extra={'uploaded': uploaded, 'skipped': skipped})
         post_library_change()
 
     success = uploaded > 0
@@ -4900,13 +4966,34 @@ def upload_library_files():
         else:
             message = "Upload failed."
 
+    if success:
+        _set_upload_job_stage(upload_id, 'completed', message or 'Upload complete.', status='success', extra={'uploaded': uploaded, 'skipped': skipped})
+    else:
+        _set_upload_job_stage(upload_id, 'failed', message or 'Upload failed.', status='failed', extra={'uploaded': uploaded, 'skipped': skipped})
+
     return jsonify({
         'success': success,
         'message': message,
         'uploaded': uploaded,
         'skipped': skipped,
-        'errors': errors
+        'errors': errors,
+        'upload_id': upload_id,
     }), (200 if success else 400)
+
+
+@app.get('/api/upload/library/status/<upload_id>')
+@access_required('admin')
+def upload_library_status(upload_id):
+    lookup_id = str(upload_id or '').strip()
+    if not lookup_id:
+        return jsonify({'success': False, 'message': 'Missing upload id.'}), 400
+    with upload_jobs_lock:
+        _prune_upload_jobs_unlocked()
+        job = upload_jobs.get(lookup_id)
+        if not job:
+            return jsonify({'success': False, 'message': 'Upload job not found.'}), 404
+        payload = dict(job)
+    return jsonify({'success': True, 'job': payload})
 
 
 @app.get('/api/saves/list')
@@ -5553,9 +5640,9 @@ def get_all_titles_api():
         release_dates = release_dates_by_title.get(title_fk) or {}
         for version in versions:
             version['release_date'] = release_dates.get(version['version'], 'Unknown')
-        versions.sort(key=lambda item: item['version'])
+        versions.sort(key=lambda item: item['version'], reverse=True)
     for app_id, versions in dlc_versions_by_app_id.items():
-        versions.sort(key=lambda item: item['version'])
+        versions.sort(key=lambda item: item['version'], reverse=True)
 
     games = []
     for row in rows:
@@ -5767,7 +5854,7 @@ def get_title_details_api():
                 }
                 for version in versions:
                     version['release_date'] = release_dates.get(version['version'], 'Unknown')
-                versions.sort(key=lambda item: item['version'])
+                versions.sort(key=lambda item: item['version'], reverse=True)
                 game['version'] = versions
             elif row.app_type == APP_TYPE_DLC:
                 dlc_versions = []
@@ -5794,7 +5881,7 @@ def get_title_details_api():
                         'size': int(dlc.size or 0),
                         'release_date': 'Unknown',
                     })
-                dlc_versions.sort(key=lambda item: item['version'])
+                dlc_versions.sort(key=lambda item: item['version'], reverse=True)
                 game['version'] = dlc_versions
                 latest_available = max([item['version'] for item in dlc_versions], default=0)
                 latest_owned = max([item['version'] for item in dlc_versions if item['owned']], default=0)

@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 import importlib.util
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, joinedload
 from app.constants import *
 from app.db import *
 from app import titles as titles_lib
@@ -865,7 +865,7 @@ def get_library_cache_state_token(force_refresh=False):
 
 
 # Bump this when the cached library schema changes.
-LIBRARY_CACHE_VERSION = 6
+LIBRARY_CACHE_VERSION = 7
 
 def is_library_unchanged():
     cache_path = Path(LIBRARY_CACHE_FILE)
@@ -930,6 +930,27 @@ def generate_library():
     try:
         with titles_lib.titledb_session():
             apps_snapshot = get_all_apps()
+            snapshot_app_ids = {
+                str(entry.get('app_id') or '').strip().upper()
+                for entry in apps_snapshot
+                if str(entry.get('app_id') or '').strip()
+            }
+            apps_lookup = {}
+            if snapshot_app_ids:
+                apps_with_files = (
+                    db.session.query(Apps)
+                    .options(joinedload(Apps.files))
+                    .filter(Apps.app_id.in_(snapshot_app_ids))
+                    .all()
+                )
+                apps_lookup = {
+                    (
+                        str(app.app_id or '').strip().upper(),
+                        str(app.app_version or '0').strip(),
+                    ): app
+                    for app in apps_with_files
+                    if str(app.app_id or '').strip()
+                }
             logger.info(f'Found {len(apps_snapshot)} apps in database')
 
             apps_by_title = {}
@@ -959,6 +980,21 @@ def generate_library():
 
             for app_entry in apps_snapshot:
                 title = dict(app_entry)
+                app_lookup_key = (
+                    str(title.get('app_id') or '').strip().upper(),
+                    str(title.get('app_version') or '0').strip(),
+                )
+                app_obj = apps_lookup.get(app_lookup_key)
+                file_list = []
+                if app_obj:
+                    for file_entry in app_obj.files:
+                        file_list.append({
+                            'filepath': file_entry.filepath,
+                            'filename': file_entry.filename,
+                            'folder': file_entry.folder,
+                            'size': file_entry.size,
+                        })
+                title['files'] = file_list
                 has_none_value = any(value is None for value in title.values())
                 if has_none_value:
                     logger.warning(f'File contains None value, it will be skipped: {title}')
@@ -1000,7 +1036,7 @@ def generate_library():
                             'release_date': version_release_dates.get(app_version, 'Unknown')
                         })
 
-                    title['version'] = sorted(version_list, key=lambda x: x['version'])
+                    title['version'] = sorted(version_list, key=lambda x: x['version'], reverse=True)
                     title['title_id_name'] = title['name']
 
                 elif title['app_type'] == APP_TYPE_DLC:
@@ -1020,7 +1056,7 @@ def generate_library():
                             'release_date': 'Unknown'
                         })
 
-                    title['version'] = sorted(version_list, key=lambda x: x['version'])
+                    title['version'] = sorted(version_list, key=lambda x: x['version'], reverse=True)
                     title['owned'] = any(app.get('owned') for app in dlc_apps)
 
                     if dlc_apps:

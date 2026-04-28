@@ -1837,12 +1837,14 @@ class ManagedCompletionStateTests(unittest.TestCase):
     @patch("app.downloads.manager._ensure_unique_path", side_effect=lambda path: path)
     @patch("app.downloads.manager.get_libraries_path", return_value=["X:\\library"])
     @patch("app.downloads.manager.os.path.exists", return_value=True)
+    @patch("app.downloads.manager._get_local_known_update_version", return_value=0)
     @patch("app.downloads.manager._get_highest_owned_update_version", return_value=655360)
     @patch("app.downloads.manager._select_completed_update_candidate", return_value=("C:\\tests\\completed\\sample_v983040.nsp.hdf", 983040))
     def test_move_completed_imports_newer_fallback_update_version(
         self,
         select_candidate_mock,
         highest_owned_mock,
+        _get_local_known_update_version_mock,
         exists_mock,
         get_libraries_path_mock,
         ensure_unique_path_mock,
@@ -1872,12 +1874,14 @@ class ManagedCompletionStateTests(unittest.TestCase):
     @patch("app.downloads.manager.shutil.move")
     @patch("app.downloads.manager.get_libraries_path", return_value=["X:\\library"])
     @patch("app.downloads.manager.os.path.exists", return_value=True)
+    @patch("app.downloads.manager._get_local_known_update_version", return_value=0)
     @patch("app.downloads.manager._get_highest_owned_update_version", return_value=1376256)
     @patch("app.downloads.manager._select_completed_update_candidate", return_value=("C:\\tests\\completed\\sample_v983040.nsp.hdf", 983040))
     def test_move_completed_rejects_non_newer_update_version(
         self,
         select_candidate_mock,
         highest_owned_mock,
+        _get_local_known_update_version_mock,
         exists_mock,
         get_libraries_path_mock,
         move_mock,
@@ -1892,7 +1896,7 @@ class ManagedCompletionStateTests(unittest.TestCase):
         )
 
         self.assertIsNone(moved_path)
-        self.assertEqual(reason, "downloaded v983040 is not newer than owned v1376256")
+        self.assertEqual(reason, "duplicate update: downloaded v983040 is not newer than known v1376256")
         move_mock.assert_not_called()
 
     @patch("app.downloads.manager._cleanup_download_path")
@@ -1908,12 +1912,14 @@ class ManagedCompletionStateTests(unittest.TestCase):
     )
     @patch("app.downloads.manager.get_libraries_path", return_value=["X:\\library"])
     @patch("app.downloads.manager.os.path.exists", return_value=True)
+    @patch("app.downloads.manager._get_local_known_update_version", return_value=0)
     @patch("app.downloads.manager._get_highest_owned_update_version", return_value=1376256)
     @patch("app.downloads.manager._select_completed_update_candidate", return_value=("C:\\tests\\completed\\sample_v983040.nsp.hdf", 983040))
     def test_move_completed_imports_other_files_when_update_is_not_newer(
         self,
         select_candidate_mock,
         highest_owned_mock,
+        _get_local_known_update_version_mock,
         exists_mock,
         get_libraries_path_mock,
         importable_files_mock,
@@ -2033,6 +2039,60 @@ class ManagedCompletionStateTests(unittest.TestCase):
         _check_completed({})
 
         adopt_untracked_mock.assert_not_called()
+
+    @patch("app.downloads.manager.remove_completed_download", return_value=(True, "ok"))
+    @patch("app.downloads.manager.list_completed_downloads")
+    @patch("app.downloads.manager._get_completed_poll_targets")
+    @patch("app.downloads.manager._state_lock")
+    @patch("app.downloads.manager._state", {
+        "running": False,
+        "last_run": 0.0,
+        "pending": {
+            "0100C62011050000:1376256": {
+                "title_id": "0100C62011050000",
+                "version": 1376256,
+                "hash": "nzo123",
+                "id": "nzo123",
+                "expected_name": "Sample Release",
+                "title_name": "Sample Game",
+                "protocol": "usenet",
+                "client_type": "sabnzbd",
+                "state": "queued",
+                "state_reason": None,
+                "last_seen_status": None,
+                "last_seen_path": None,
+            }
+        },
+        "completed": set(),
+        "completed_identities": set(),
+        "duplicates": [],
+    })
+    @patch("app.downloads.manager._move_completed_with_reason", return_value=(None, "duplicate update: 0100C62011050000 v1376256 already known"))
+    def test_check_completed_marks_duplicate_and_removes_pending_item(
+        self,
+        _move_completed_mock,
+        _state_lock_mock,
+        poll_targets_mock,
+        list_completed_mock,
+        remove_completed_mock,
+    ):
+        poll_targets_mock.return_value = [("usenet", {"type": "sabnzbd"})]
+        list_completed_mock.return_value = [{
+            "id": "nzo123",
+            "hash": "nzo123",
+            "name": "Sample Release",
+            "path": "C:\\tests\\completed\\Sample Release",
+            "protocol": "usenet",
+            "client_type": "sabnzbd",
+        }]
+
+        _check_completed({})
+
+        self.assertEqual(downloads_manager._state["pending"], {})
+        self.assertIn("0100C62011050000:1376256", downloads_manager._state["completed"])
+        self.assertEqual(len(downloads_manager._state.get("duplicates") or []), 1)
+        self.assertIn("duplicate update", downloads_manager._state["duplicates"][0]["reason"])
+        remove_completed_mock.assert_called_once()
 
     @patch("app.downloads.manager._delete_download_payload", return_value=(True, None))
     @patch("app.downloads.manager.remove_active_download", return_value=(True, "ok"))

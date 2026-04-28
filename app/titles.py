@@ -1620,19 +1620,11 @@ def _build_local_fallback_info(lookup_id, _seen=None, preferred_language=None, p
                     related_info = None
             if not isinstance(related_info, dict) or not related_info:
                 continue
-            aliased_icon, aliased_banner = _alias_cached_media(related_title_id, key)
+            _alias_cached_media(related_title_id, key)
             bridged = {
                 "name": str(related_info.get("name") or "Unrecognized"),
-                "bannerUrl": (
-                    f"/api/shop/banner/{key}"
-                    if aliased_banner
-                    else str(related_info.get("bannerUrl") or "//placehold.it/400x200")
-                ),
-                "iconUrl": (
-                    f"/api/shop/icon/{key}"
-                    if aliased_icon
-                    else str(related_info.get("iconUrl") or "")
-                ),
+                "bannerUrl": f"/api/shop/banner/{key}",
+                "iconUrl": f"/api/shop/icon/{key}",
                 "id": key,
                 "category": str(related_info.get("category") or ""),
                 "nsuId": related_info.get("nsuId"),

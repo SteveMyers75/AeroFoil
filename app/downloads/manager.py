@@ -2,12 +2,15 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import threading
 import time
 import unicodedata
+import json
 
 from app import titles as titles_lib
 from app.constants import ALLOWED_EXTENSIONS, APP_TYPE_BASE, APP_TYPE_DLC, APP_TYPE_UPD
+from app.constants import DATA_DIR
 from app.db import get_all_title_apps, get_all_titles, get_libraries_path
 from app.downloads.client import (
     TORRENT_CLIENT_TYPES,
@@ -33,8 +36,13 @@ _state = {
     "pending": {},  # key -> info
     "completed": set(),
     "completed_identities": set(),
+    "duplicates": [],
 }
 _state_loaded = False
+_DOWNLOADS_STATE_FILE = os.path.join(DATA_DIR, "downloads_state.json")
+_DOWNLOADS_CONTENT_INDEX_FILE = os.path.join(DATA_DIR, "downloads_content.index.sqlite3")
+_SNAKE_PASS_BASE_TITLE_ID = "0100B3A017864000"
+_SNAKE_PASS_BASE_MIN_VERSION = 1
 
 
 def _get_prowlarr_timeout_seconds(prowlarr_cfg):
@@ -279,21 +287,77 @@ def _clear_pending_stuck(info):
 
 
 def _serialize_downloads_state_locked():
-    return {}
+    pending = {}
+    for key, info in (_state.get("pending") or {}).items():
+        if isinstance(info, dict):
+            pending[str(key)] = dict(info)
+    duplicates = _state.get("duplicates") or []
+    if not isinstance(duplicates, list):
+        duplicates = []
+    return {
+        "running": False,
+        "last_run": float(_state.get("last_run") or 0.0),
+        "pending": pending,
+        "completed": sorted(str(item) for item in (_state.get("completed") or set())),
+        "completed_identities": [
+            [str(identity[0]), str(identity[1]), str(identity[2])]
+            for identity in (_state.get("completed_identities") or set())
+            if isinstance(identity, (tuple, list)) and len(identity) == 3
+        ],
+        "duplicates": [dict(entry) for entry in duplicates if isinstance(entry, dict)],
+    }
 
 
 def _persist_downloads_state_locked():
-    return
+    try:
+        os.makedirs(os.path.dirname(_DOWNLOADS_STATE_FILE), exist_ok=True)
+        serialized = _serialize_downloads_state_locked()
+        tmp_file = f"{_DOWNLOADS_STATE_FILE}.tmp"
+        with open(tmp_file, "w", encoding="utf-8") as handle:
+            json.dump(serialized, handle, ensure_ascii=True, indent=2, sort_keys=True)
+        os.replace(tmp_file, _DOWNLOADS_STATE_FILE)
+    except Exception as exc:
+        logger.warning("Failed to persist downloads state: %s", exc)
 
 
 def _persist_downloads_state():
-    return
+    with _state_lock:
+        _persist_downloads_state_locked()
 
 
 def _load_downloads_state_locked():
     global _state_loaded
     if _state_loaded:
         return
+    try:
+        if os.path.exists(_DOWNLOADS_STATE_FILE):
+            with open(_DOWNLOADS_STATE_FILE, "r", encoding="utf-8") as handle:
+                raw = json.load(handle) or {}
+            pending = raw.get("pending") if isinstance(raw, dict) else {}
+            completed = raw.get("completed") if isinstance(raw, dict) else []
+            completed_identities = raw.get("completed_identities") if isinstance(raw, dict) else []
+            duplicates = raw.get("duplicates") if isinstance(raw, dict) else []
+            _state["pending"] = pending if isinstance(pending, dict) else {}
+            _state["completed"] = set(completed or [])
+            restored_identities = set()
+            for identity in completed_identities or []:
+                if isinstance(identity, (tuple, list)) and len(identity) == 3:
+                    restored_identities.add((str(identity[0]), str(identity[1]), str(identity[2])))
+            _state["completed_identities"] = restored_identities
+            if isinstance(duplicates, list):
+                _state["duplicates"] = [dict(entry) for entry in duplicates if isinstance(entry, dict)][-200:]
+            else:
+                _state["duplicates"] = []
+            try:
+                _state["last_run"] = float(raw.get("last_run") or 0.0)
+            except Exception:
+                _state["last_run"] = 0.0
+    except Exception as exc:
+        logger.warning("Failed to load downloads state: %s", exc)
+        _state["pending"] = {}
+        _state["completed"] = set()
+        _state["completed_identities"] = set()
+        _state["duplicates"] = []
     _state_loaded = True
     return
 
@@ -499,6 +563,7 @@ def get_downloads_state():
             "last_run": _state["last_run"],
             "pending": pending_items,
             "completed": sorted(_state["completed"]),
+            "duplicates": list(_state.get("duplicates") or []),
         }
 
 
@@ -1474,6 +1539,22 @@ def _process_tracked_completed_item_locked(key, info, bucket):
     moved_result, move_reason = _move_completed_with_reason(match, move_info)
     moved_match_paths = _coerce_moved_paths(moved_result)
     if not moved_match_paths:
+        if _is_duplicate_reason(move_reason):
+            _track_duplicate_locked(info, match, move_reason, key=key)
+            _state["pending"].pop(key, None)
+            _state["completed"].add(key)
+            identity = _get_pending_identity(match) or _get_pending_identity(info)
+            if identity:
+                _get_completed_identities_locked().add(identity)
+            if matched_id:
+                ok, message = remove_completed_download(
+                    str(info.get("protocol") or "").strip().lower(),
+                    bucket["client_cfg"],
+                    matched_id,
+                )
+                if not ok:
+                    logger.warning("Failed to remove duplicate completed %s item %s: %s", info.get("protocol"), matched_id, message)
+            return []
         logger.warning(
             "Matched completed download for pending key %s, but move failed. Keeping pending entry for retry: %s",
             key,
@@ -1780,7 +1861,8 @@ def _move_completed_with_reason(item, update_info=None):
             logger.warning("No update file found for %s v%s in %s", title_id, requested_version, src_path)
             return None, "no update file found"
         highest_owned = _get_highest_owned_update_version(title_id)
-        if actual_version <= highest_owned:
+        effective_highest_owned = max(highest_owned, _get_local_known_update_version(title_id))
+        if actual_version <= effective_highest_owned:
             moved_result, move_reason = _move_generic_importable_files(src_path, dest_root, excluded_paths=[update_path])
             if moved_result:
                 logger.info(
@@ -1790,7 +1872,7 @@ def _move_completed_with_reason(item, update_info=None):
                     src_path,
                 )
                 return moved_result, None
-            return None, f"downloaded v{actual_version} is not newer than owned v{highest_owned}"
+            return None, f"duplicate update: downloaded v{actual_version} is not newer than known v{effective_highest_owned}"
         if requested_version and int(actual_version) != int(requested_version):
             logger.info(
                 "Importing completed update %s v%s although AeroFoil requested v%s because it upgrades owned v%s.",
@@ -1813,6 +1895,7 @@ def _move_completed_with_reason(item, update_info=None):
             os.makedirs(dest_dir, exist_ok=True)
             shutil.move(update_path, dest_path)
             logger.info("Moved update to library: %s", dest_path)
+            _record_local_content_index(title_id=title_id, app_id=update_info.get("app_id"), app_type=APP_TYPE_UPD, version=actual_version)
             _cleanup_download_path(src_path, dest_root)
             return dest_path, None
         except Exception as e:
@@ -1820,10 +1903,185 @@ def _move_completed_with_reason(item, update_info=None):
             return None, str(e)
 
     if os.path.abspath(os.path.dirname(src_path)) == os.path.abspath(dest_root):
-        return _normalize_imported_wrapped_files(src_path), None
-    return _move_generic_importable_files(src_path, dest_root)
+        duplicate_reason = _detect_duplicate_reason_for_path(src_path)
+        if duplicate_reason:
+            return None, duplicate_reason
+        moved_path = _normalize_imported_wrapped_files(src_path)
+        _record_imported_file_content(moved_path)
+        return moved_path, None
+    duplicate_reason = _detect_duplicate_reason_for_path(src_path)
+    if duplicate_reason:
+        return None, duplicate_reason
+    moved_result, move_reason = _move_generic_importable_files(src_path, dest_root)
+    if moved_result:
+        for moved_path in _coerce_moved_paths(moved_result):
+            _record_imported_file_content(moved_path)
+    return moved_result, move_reason
 
 
 def _move_completed(item, update_info=None):
     moved_result, _ = _move_completed_with_reason(item, update_info=update_info)
     return moved_result
+
+
+def _is_duplicate_reason(reason):
+    text = str(reason or "").strip().lower()
+    return text.startswith("duplicate")
+
+
+def _track_duplicate_locked(info, item, reason, key=None):
+    duplicates = _state.get("duplicates")
+    if not isinstance(duplicates, list):
+        duplicates = []
+        _state["duplicates"] = duplicates
+    label = str((item or {}).get("name") or (info or {}).get("expected_name") or _format_pending_label(info)).strip()
+    duplicates.append({
+        "timestamp": int(time.time()),
+        "label": label,
+        "reason": str(reason or "duplicate"),
+        "protocol": str((info or {}).get("protocol") or (item or {}).get("protocol") or "").strip().lower() or None,
+        "client_type": str((info or {}).get("client_type") or (item or {}).get("client_type") or "").strip().lower() or None,
+        "path": str((item or {}).get("path") or "").strip() or None,
+        "key": str(key or ""),
+    })
+    if len(duplicates) > 200:
+        del duplicates[:-200]
+    _persist_downloads_state_locked()
+
+
+def _open_content_index_db():
+    os.makedirs(os.path.dirname(_DOWNLOADS_CONTENT_INDEX_FILE), exist_ok=True)
+    conn = sqlite3.connect(_DOWNLOADS_CONTENT_INDEX_FILE)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS local_content ("
+        "title_id TEXT NOT NULL,"
+        "app_id TEXT,"
+        "app_type TEXT NOT NULL,"
+        "version INTEGER NOT NULL DEFAULT 0,"
+        "updated_at INTEGER NOT NULL,"
+        "PRIMARY KEY (title_id, app_type, version)"
+        ")"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_local_content_title_type ON local_content(title_id, app_type)")
+    return conn
+
+
+def _record_local_content_index(title_id=None, app_id=None, app_type=None, version=None):
+    title_id = str(title_id or "").strip().upper()
+    app_type = str(app_type or "").strip().upper()
+    if not title_id or not app_type:
+        return
+    try:
+        version_int = int(version or 0)
+    except Exception:
+        version_int = 0
+    now = int(time.time())
+    try:
+        conn = _open_content_index_db()
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO local_content (title_id, app_id, app_type, version, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (title_id, (str(app_id or "").strip().upper() or None), app_type, version_int, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning("Failed to update local content index: %s", exc)
+
+
+def _get_local_known_update_version(title_id):
+    title_id = str(title_id or "").strip().upper()
+    if not title_id:
+        return 0
+    try:
+        conn = _open_content_index_db()
+        try:
+            row = conn.execute(
+                "SELECT MAX(version) FROM local_content WHERE title_id = ? AND app_type = ?",
+                (title_id, APP_TYPE_UPD),
+            ).fetchone()
+            value = int((row or [0])[0] or 0)
+            return max(value, 0)
+        finally:
+            conn.close()
+    except Exception:
+        return 0
+
+
+def _derive_title_defaults_for_snake_pass(title_id, app_type, version):
+    if str(title_id or "").strip().upper() == _SNAKE_PASS_BASE_TITLE_ID and str(app_type or "").strip().upper() == APP_TYPE_BASE:
+        try:
+            version_int = int(version or 0)
+        except Exception:
+            version_int = 0
+        if version_int <= 0:
+            return _SNAKE_PASS_BASE_MIN_VERSION
+    return version
+
+
+def _detect_duplicate_reason_for_path(src_path):
+    for importable in _iter_importable_download_files(src_path):
+        try:
+            _, success, contents, _ = titles_lib.identify_file(importable)
+        except BaseException:
+            success = False
+            contents = []
+        if not success or not contents:
+            continue
+        for content in contents:
+            title_id = str(content.get("title_id") or "").strip().upper()
+            app_id = str(content.get("app_id") or "").strip().upper()
+            app_type = str(content.get("type") or "").strip().upper()
+            raw_version = content.get("version")
+            try:
+                version = int(raw_version) if raw_version is not None else 0
+            except Exception:
+                version = 0
+            version = _derive_title_defaults_for_snake_pass(title_id, app_type, version)
+            if not title_id:
+                continue
+            title_apps = get_all_title_apps(title_id) or []
+            if app_type == APP_TYPE_BASE:
+                if any(str(app.get("app_type") or "").upper() == APP_TYPE_BASE and app.get("owned") for app in title_apps):
+                    return f"duplicate basegame: {title_id} already exists in library"
+            elif app_type == APP_TYPE_UPD:
+                owned_versions = []
+                for app in title_apps:
+                    if str(app.get("app_type") or "").upper() != APP_TYPE_UPD:
+                        continue
+                    if not app.get("owned"):
+                        continue
+                    try:
+                        owned_versions.append(int(app.get("app_version") or 0))
+                    except Exception:
+                        continue
+                known_highest = max(owned_versions) if owned_versions else 0
+                local_highest = _get_local_known_update_version(title_id)
+                known_highest = max(known_highest, local_highest)
+                if version <= known_highest:
+                    return f"duplicate update: {title_id} v{version} already known (latest v{known_highest})"
+    return None
+
+
+def _record_imported_file_content(import_path):
+    if not import_path or not os.path.exists(import_path):
+        return
+    try:
+        _, success, contents, _ = titles_lib.identify_file(import_path)
+    except BaseException:
+        success = False
+        contents = []
+    if not success:
+        return
+    for content in contents or []:
+        title_id = str(content.get("title_id") or "").strip().upper()
+        app_id = str(content.get("app_id") or "").strip().upper()
+        app_type = str(content.get("type") or "").strip().upper()
+        raw_version = content.get("version")
+        try:
+            version = int(raw_version) if raw_version is not None else 0
+        except Exception:
+            version = 0
+        version = _derive_title_defaults_for_snake_pass(title_id, app_type, version)
+        _record_local_content_index(title_id=title_id, app_id=app_id, app_type=app_type, version=version)

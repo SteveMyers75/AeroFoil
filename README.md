@@ -63,6 +63,7 @@ services:
       - /your/game/directory:/games
       - ./config:/app/config
       - ./data:/app/data
+      - ./conversion-tmp:/app/conversion-tmp
     ports:
       - "8465:8465"
 ```
@@ -71,9 +72,9 @@ services:
 
 You can then create and start the container with the command (executed in the same directory as the docker-compose file):
 
-    docker-compose up -d
+    docker compose up -d
 
-This is usefull if you don't want to remember the `docker run` command and have a persistent and reproductible container configuration.
+This is useful if you don't want to remember the `docker run` command and want a persistent, reproducible container configuration.
 
 ## Environment variables
 New `AEROFOIL_*` variables are preferred. Legacy `OWNFOIL_*` names are still accepted for backward compatibility.
@@ -81,9 +82,13 @@ New `AEROFOIL_*` variables are preferred. Legacy `OWNFOIL_*` names are still acc
 - `PUID` / `PGID`: control the user ID/group ID inside the container (default `1000:1000`).
 - `USER_ADMIN_NAME` / `USER_ADMIN_PASSWORD`: create or update an admin user at startup (default: unset).
 - `USER_GUEST_NAME` / `USER_GUEST_PASSWORD`: create or update a regular user at startup (default: unset).
+- `AEROFOIL_DB_FILE`: override SQLite database file path (legacy `OWNFOIL_DB_FILE` also supported).
+- `AEROFOIL_VERSION`: override app version label (legacy `OWNFOIL_VERSION` and `APP_VERSION` also supported).
 - `AEROFOIL_SECRET_KEY`: Flask secret key used for sessions/cookies. Recommended to set a long random value in production (default: auto-generated at startup).
 - `AEROFOIL_TRUST_PROXY_HEADERS`: enable trusting `X-Forwarded-For` when the proxy is in the trusted list (`true`/`false`, default: `false`).
 - `AEROFOIL_TRUSTED_PROXIES`: comma-separated proxy IPs/CIDRs (default: empty), for example `172.16.0.0/12,192.168.0.0/16`.
+- `AEROFOIL_AUTH_BLOCKED_COUNTRY_CODES`: comma-separated ISO country codes to block at auth boundary (legacy `OWNFOIL_AUTH_BLOCKED_COUNTRY_CODES` also supported).
+- `AEROFOIL_AUTH_ALLOWED_COUNTRY_CODES`: comma-separated ISO country codes allowlist at auth boundary (legacy `OWNFOIL_AUTH_ALLOWED_COUNTRY_CODES` also supported).
 - `AEROFOIL_CONVERSION_STAGING_ENABLED`: enable fixed Docker staging path (`/app/conversion-tmp`) for temporary NSP/XCI conversion output (`true`/`false`, default: unset/disabled).
 - `AEROFOIL_CONVERSION_STAGING_DIR`: absolute path for temporary NSP/XCI conversion output (default: empty, which keeps direct in-library conversion output).
 - `SHOP_SECTIONS_CACHE_TTL_S`: cache TTL for `/api/shop/sections` (seconds). Use `none`/unset for rebuild-only (default), `0` to disable caching. Recommended: `none` for stable libraries, or `600`-`900` for periodic refresh.
@@ -92,6 +97,10 @@ New `AEROFOIL_*` variables are preferred. Legacy `OWNFOIL_*` names are still acc
 - `MEDIA_INDEX_TTL_S`: cache TTL for icon/banner media index (seconds). Use `none`/unset for rebuild-only (default), `0` to disable caching. Recommended: `none` or `600`-`900`.
 - `AEROFOIL_TITLES_TOTAL_CACHE_TTL_S`: cache TTL for `/api/titles` total-count cache (seconds, default: `300`; legacy `OWNFOIL_TITLES_TOTAL_CACHE_TTL_S` also supported).
 - `AEROFOIL_TITLES_TOTAL_CACHE_MAX_ENTRIES`: max entries for `/api/titles` total-count cache (default: `256`; clamped to `16..4096`; legacy `OWNFOIL_TITLES_TOTAL_CACHE_MAX_ENTRIES` also supported).
+- `AEROFOIL_ACCESS_EVENTS_QUERY_MAX`: max rows returned by access-events API queries (legacy `OWNFOIL_ACCESS_EVENTS_QUERY_MAX` also supported; default `10000`).
+- `AEROFOIL_ACTIVITY_API_MAX_LIMIT`: max rows returned by activity API queries (legacy `OWNFOIL_ACTIVITY_API_MAX_LIMIT` also supported; default `10000`).
+- `AEROFOIL_CLIENTS_HISTORY_API_MAX_LIMIT`: max rows returned by clients-history API queries (legacy `OWNFOIL_CLIENTS_HISTORY_API_MAX_LIMIT` also supported; default `20000`).
+- `AEROFOIL_CLIENTS_HISTORY_CSV_MAX_LIMIT`: max rows exported by clients-history CSV endpoints (legacy `OWNFOIL_CLIENTS_HISTORY_CSV_MAX_LIMIT` also supported; default `50000`).
 - `AEROFOIL_HOST`: bind host for the web server (default: `0.0.0.0`).
 - `AEROFOIL_PORT`: bind port for the web server (default: `8465`).
 - `AEROFOIL_WSGI_THREADS`: Waitress worker thread count (default: `32`).
@@ -101,6 +110,9 @@ New `AEROFOIL_*` variables are preferred. Legacy `OWNFOIL_*` names are still acc
 - `AEROFOIL_WSGI_MAX_REQUEST_BODY_SIZE`: max HTTP request body size in bytes for Waitress (default: `68853694464`, about `64.125 GB`).
 - `AEROFOIL_UPLOAD_TMP_DIR`: directory for temporary multipart upload files during request parsing (default: `<data>/tmp/uploads`; ensure enough free disk space for very large uploads).
 - `AEROFOIL_USE_FLASK_DEV`: set to `true`/`1` to force Flask dev server instead of Waitress.
+- `AEROFOIL_STATIC_MAX_AGE_S`: static asset cache max-age in seconds (legacy `OWNFOIL_STATIC_MAX_AGE_S` also supported; default `3600`).
+- `WATCHDOG_POLLING`: set to `1`/`true`/`yes` to force polling-based file watcher observer.
+- `LOG_LEVEL`: Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL (default: INFO)
 
 ## Using Python
 Clone the repository using `git`, install the dependencies and you're good to go:
@@ -246,14 +258,13 @@ If you run AeroFoil behind a reverse proxy (e.g. Nginx Proxy Manager), AeroFoil 
 
 You can set this via `settings.yaml` or with environment variables (`AEROFOIL_TRUST_PROXY_HEADERS` and `AEROFOIL_TRUSTED_PROXIES`).
 
-In `config/settings.json`:
-```json
-{
-  "security": {
-    "trust_proxy_headers": true,
-    "trusted_proxies": ["172.16.0.0/12", "192.168.0.0/16"]
-  }
-}
+In `config/settings.yaml`:
+```yaml
+security:
+  trust_proxy_headers: true
+  trusted_proxies:
+    - 172.16.0.0/12
+    - 192.168.0.0/16
 ```
 
 Set `trusted_proxies` to your proxy IP(s) and/or your Docker network subnet so the Activity page shows the WAN/client IP instead of the proxy's LAN IP.
