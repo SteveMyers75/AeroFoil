@@ -7,6 +7,7 @@ import sys
 import tempfile
 import hashlib
 import base64
+import logging
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -17,6 +18,8 @@ DEFAULT_SWITCH_GUIDES_SUBMODULE_SCRIPTS_DIR = (
 DEFAULT_LOCAL_METADATA_CACHE_DIR = (
     Path(__file__).resolve().parent / "data" / "cache" / "local-file-metadata"
 )
+logger = logging.getLogger("main")
+CACHE_SCHEMA_VERSION = 2
 
 _ALL_ICON_LANGUAGE_TOKENS = [
     "AmericanEnglish",
@@ -148,6 +151,8 @@ def _load_persistent_metadata_cache(filepath):
         return None
     if not isinstance(data, dict):
         return None
+    if int(data.get("schema_version") or 0) != CACHE_SCHEMA_VERSION:
+        return None
     if str(data.get("signature") or "") != signature:
         return None
     if bool(data.get("miss")):
@@ -165,6 +170,7 @@ def _save_persistent_metadata_cache(filepath, metadata):
     except Exception:
         return
     cache_doc = {
+        "schema_version": CACHE_SCHEMA_VERSION,
         "signature": signature,
         "miss": not (isinstance(metadata, dict) and bool(metadata)),
         "payload": _encode_cache_payload(metadata or {}),
@@ -366,6 +372,63 @@ def _extract_nacp_and_icon_from_control_nca(
     return out
 
 
+def _extract_cnmt_payload_from_meta_nca(nca_obj, pfs0_mod):
+    if nca_obj is None:
+        return None
+    if not getattr(nca_obj, "fsheaders", None):
+        return None
+    if not nca_obj.fsheaders[0].section_has_content:
+        return None
+
+    decrypted_section = nca_obj.decrypted_sections[0]
+    fs_header = nca_obj.fsheaders[0]
+    section0_data = decrypted_section[fs_header.content_start:fs_header.content_end]
+    if not section0_data:
+        return None
+
+    # Modern meta NCAs usually contain a PFS0 where one file is the CNMT payload.
+    if section0_data[:4] in (b"PFS0", b"HFS0"):
+        try:
+            header = pfs0_mod.Pfs0Header(section0_data)
+            strtab = section0_data[
+                header.string_table_offset:header.string_table_offset + header.string_table_size
+            ]
+            entries = []
+            for idx in range(header.num_files):
+                pos = header.entry_table_offset + (idx * pfs0_mod.PFS0_FILE_ENTRY_SIZE)
+                chunk = section0_data[pos:pos + pfs0_mod.PFS0_FILE_ENTRY_SIZE]
+                entry = pfs0_mod.Pfs0FileEntry.from_bytes(chunk)
+                null_pos = strtab.find(b"\x00", entry.string_offset)
+                if null_pos == -1:
+                    null_pos = len(strtab)
+                filename = strtab[entry.string_offset:null_pos].decode("utf-8", errors="replace")
+                entries.append((filename, entry))
+
+            cnmt_entry = next(
+                (item for item in entries if str(item[0]).lower().endswith(".cnmt")),
+                None,
+            )
+            if cnmt_entry is None and entries:
+                cnmt_entry = entries[0]
+            if cnmt_entry is not None:
+                _, entry = cnmt_entry
+                start = header.data_offset + entry.offset
+                end = start + entry.size
+                if 0 <= start < end <= len(section0_data):
+                    return section0_data[start:end]
+        except Exception:
+            logger.debug("Local metadata parse: failed to parse PFS0-wrapped CNMT payload", exc_info=True)
+
+    # Legacy fallback heuristics.
+    for start in (0, 0x20, 0x60):
+        if start >= len(section0_data):
+            continue
+        candidate = section0_data[start:]
+        if len(candidate) >= 0x20:
+            return candidate
+    return None
+
+
 def _extract_from_nsp(filepath, modules, preferred_language=None, preferred_region=None):
     pfs0_mod = modules["pfs0"]
     nca_mod = modules["nca"]
@@ -424,6 +487,7 @@ def _extract_from_nsp(filepath, modules, preferred_language=None, preferred_regi
         if str(name).lower().endswith(".nca") or str(name).lower().endswith(".ncz")
     ]
     if not nca_names:
+        logger.warning("Local metadata NSP parse: no NCA/NCZ entries found in %s", filepath)
         return {}
 
     cnmt_nca_name = next(
@@ -435,7 +499,14 @@ def _extract_from_nsp(filepath, modules, preferred_language=None, preferred_regi
         None,
     )
     if cnmt_nca_name is None:
+        logger.warning("Local metadata NSP parse: CNMT NCA/NCZ not found in %s", filepath)
         return {}
+    logger.info(
+        "Local metadata NSP parse: selected CNMT container %s (total nca/ncz entries=%s) for %s",
+        cnmt_nca_name,
+        len(nca_names),
+        filepath,
+    )
 
     largest_name = max(
         (name for name in nca_names if name != cnmt_nca_name),
@@ -453,17 +524,24 @@ def _extract_from_nsp(filepath, modules, preferred_language=None, preferred_regi
 
     cnmt_nca_data = _read_nca_or_ncz_from_container(cnmt_nca_name)
     if not cnmt_nca_data:
+        logger.warning("Local metadata NSP parse: failed to load/decompress CNMT container %s in %s", cnmt_nca_name, filepath)
         return {}
     cnmt_nca_obj = nca_mod.Nca(cnmt_nca_data, titlekey=titlekey)
-    section0_data = cnmt_nca_obj.decrypted_sections[0][
-        cnmt_nca_obj.fsheaders[0].content_start:cnmt_nca_obj.fsheaders[0].content_end
-    ]
-    cnmt_data = section0_data[0x60:]
+    cnmt_data = _extract_cnmt_payload_from_meta_nca(cnmt_nca_obj, pfs0_mod)
+    if not cnmt_data:
+        logger.warning("Local metadata NSP parse: failed to extract CNMT payload from %s", filepath)
+        return {}
     cnmt_obj = cnmt_mod.parse_cnmt(cnmt_data)
     out = {
         "title_id": f"{int(cnmt_obj.title_id):016X}",
         "version": int(getattr(cnmt_obj, "version", 0) or 0),
     }
+    logger.info(
+        "Local metadata NSP parse: CNMT parsed title_id=%s version=%s for %s",
+        out.get("title_id"),
+        out.get("version"),
+        filepath,
+    )
 
     control_nca_data = None
     for name in nca_names:
@@ -476,6 +554,7 @@ def _extract_from_nsp(filepath, modules, preferred_language=None, preferred_regi
             nca_header = nca_mod.Nca(file_data)
             if nca_header.content_type == "Control":
                 control_nca_data = file_data
+                logger.info("Local metadata NSP parse: control NCA found in %s via %s", filepath, name)
                 break
         except Exception:
             continue
@@ -487,6 +566,7 @@ def _extract_from_nsp(filepath, modules, preferred_language=None, preferred_regi
                 nca_header = nca_mod.Nca(fallback_data)
                 if nca_header.content_type == "Control":
                     control_nca_data = fallback_data
+                    logger.info("Local metadata NSP parse: control NCA fallback hit in %s via %s", filepath, largest_name)
             except Exception:
                 pass
 
@@ -501,12 +581,15 @@ def _extract_from_nsp(filepath, modules, preferred_language=None, preferred_regi
                 preferred_region=preferred_region,
             )
         )
+    else:
+        logger.warning("Local metadata NSP parse: control NCA not found in %s", filepath)
 
     return out
 
 
 def _extract_from_xci(filepath, modules, preferred_language=None, preferred_region=None):
     hfs0_mod = modules["hfs0"]
+    pfs0_mod = modules["pfs0"]
     nca_mod = modules["nca"]
     cnmt_mod = modules["cnmt"]
     romfs_mod = modules["romfs"]
@@ -531,6 +614,7 @@ def _extract_from_xci(filepath, modules, preferred_language=None, preferred_regi
             secure_offset = hfs0_offset + root_ctx.header_size + entry.offset
             break
     if secure_offset is None:
+        logger.warning("Local metadata XCI parse: secure partition not found in %s", filepath)
         return {}
 
     with open(filepath, "rb") as handle:
@@ -552,6 +636,7 @@ def _extract_from_xci(filepath, modules, preferred_language=None, preferred_regi
         ):
             name_to_index[name] = idx
     if not name_to_index:
+        logger.warning("Local metadata XCI parse: no NCA/NCZ entries found in secure partition for %s", filepath)
         return {}
 
     cnmt_nca_name = next(
@@ -563,7 +648,14 @@ def _extract_from_xci(filepath, modules, preferred_language=None, preferred_regi
         None,
     )
     if cnmt_nca_name is None:
+        logger.warning("Local metadata XCI parse: CNMT NCA/NCZ not found in %s", filepath)
         return {}
+    logger.info(
+        "Local metadata XCI parse: selected CNMT container %s (total nca/ncz entries=%s) for %s",
+        cnmt_nca_name,
+        len(name_to_index),
+        filepath,
+    )
 
     largest_name = None
     largest_size = -1
@@ -588,17 +680,24 @@ def _extract_from_xci(filepath, modules, preferred_language=None, preferred_regi
 
     cnmt_nca_data = _read_nca_or_ncz_from_secure(cnmt_nca_name)
     if not cnmt_nca_data:
+        logger.warning("Local metadata XCI parse: failed to load/decompress CNMT container %s in %s", cnmt_nca_name, filepath)
         return {}
     cnmt_nca_obj = nca_mod.Nca(cnmt_nca_data, titlekey=None)
-    section0_data = cnmt_nca_obj.decrypted_sections[0][
-        cnmt_nca_obj.fsheaders[0].content_start:cnmt_nca_obj.fsheaders[0].content_end
-    ]
-    cnmt_data = section0_data[0x60:]
+    cnmt_data = _extract_cnmt_payload_from_meta_nca(cnmt_nca_obj, pfs0_mod)
+    if not cnmt_data:
+        logger.warning("Local metadata XCI parse: failed to extract CNMT payload from %s", filepath)
+        return {}
     cnmt_obj = cnmt_mod.parse_cnmt(cnmt_data)
     out = {
         "title_id": f"{int(cnmt_obj.title_id):016X}",
         "version": int(getattr(cnmt_obj, "version", 0) or 0),
     }
+    logger.info(
+        "Local metadata XCI parse: CNMT parsed title_id=%s version=%s for %s",
+        out.get("title_id"),
+        out.get("version"),
+        filepath,
+    )
 
     control_nca_data = None
     for name in name_to_index:
@@ -611,6 +710,7 @@ def _extract_from_xci(filepath, modules, preferred_language=None, preferred_regi
             nca_header = nca_mod.Nca(file_data)
             if nca_header.content_type == "Control":
                 control_nca_data = file_data
+                logger.info("Local metadata XCI parse: control NCA found in %s via %s", filepath, name)
                 break
         except Exception:
             continue
@@ -622,6 +722,7 @@ def _extract_from_xci(filepath, modules, preferred_language=None, preferred_regi
                 nca_header = nca_mod.Nca(file_data)
                 if nca_header.content_type == "Control":
                     control_nca_data = file_data
+                    logger.info("Local metadata XCI parse: control NCA fallback hit in %s via %s", filepath, largest_name)
             except Exception:
                 pass
 
@@ -636,6 +737,8 @@ def _extract_from_xci(filepath, modules, preferred_language=None, preferred_regi
                 preferred_region=preferred_region,
             )
         )
+    else:
+        logger.warning("Local metadata XCI parse: control NCA not found in %s", filepath)
 
     return out
 
@@ -646,6 +749,7 @@ def _decompress_ncz_bytes(ncz_bytes):
     try:
         from nsz.NszDecompressor import decompress as nsz_decompress
     except Exception:
+        logger.warning("Local metadata parse: nsz.NszDecompressor is unavailable for NCZ partial decompression")
         return None
 
     temp_root = Path(__file__).resolve().parent / "data" / "tmp" / "local-metadata"
@@ -660,6 +764,7 @@ def _decompress_ncz_bytes(ncz_bytes):
     try:
         with open(in_path, "wb") as handle:
             handle.write(bytes(ncz_bytes))
+        logger.debug("Local metadata parse: decompressing NCZ chunk (%s bytes)", len(ncz_bytes))
         nsz_decompress(str(in_path), temp_dir, False, None, True)
         if not out_path.is_file():
             candidates = list(Path(temp_dir).glob("*.nca"))
@@ -669,6 +774,7 @@ def _decompress_ncz_bytes(ncz_bytes):
         with open(out_path, "rb") as handle:
             return handle.read()
     except Exception:
+        logger.warning("Local metadata parse: NCZ partial decompression failed", exc_info=True)
         return None
     finally:
         try:
@@ -686,21 +792,25 @@ def extract_local_metadata(filepath, scripts_dir=None, preferred_language=None, 
 
     cached = _load_persistent_metadata_cache(filepath)
     if isinstance(cached, dict):
+        logger.debug("Local metadata parse: cache hit for %s", filepath)
         return dict(cached)
 
     # Only allow loading vendored Switch-Ghidra parser modules from this repo.
     scripts_dir = resolve_switch_guides_scripts_dir()
     if not scripts_dir:
+        logger.warning("Local metadata parse: vendored parser scripts directory missing for %s", filepath)
         _save_persistent_metadata_cache(filepath, {})
         return {}
 
     try:
         modules = _load_switch_guides_modules(scripts_dir)
     except Exception:
+        logger.warning("Local metadata parse: failed to load parser modules from %s for %s", scripts_dir, filepath, exc_info=True)
         _save_persistent_metadata_cache(filepath, {})
         return {}
 
     ext = Path(filepath).suffix.lower()
+    logger.info("Local metadata parse: start for %s (ext=%s)", filepath, ext)
     try:
         if ext == ".nsp":
             out = _extract_from_nsp(
@@ -739,6 +849,7 @@ def extract_local_metadata(filepath, scripts_dir=None, preferred_language=None, 
             _save_persistent_metadata_cache(filepath, out if isinstance(out, dict) else {})
             return out
     except Exception:
+        logger.warning("Local metadata parse: extractor failed for %s", filepath, exc_info=True)
         _save_persistent_metadata_cache(filepath, {})
         return {}
     _save_persistent_metadata_cache(filepath, {})
