@@ -2160,11 +2160,15 @@
             return Number.isNaN(timestamp) ? Number.NEGATIVE_INFINITY : timestamp;
         };
         const sortedVersions = [...versions].sort((left, right) => {
+            const versionDiff = Number(right?.version || 0) - Number(left?.version || 0);
+            if (versionDiff !== 0) {
+                return versionDiff;
+            }
             const releaseDiff = parseReleaseDateValue(right?.release_date) - parseReleaseDateValue(left?.release_date);
             if (releaseDiff !== 0) {
                 return releaseDiff;
             }
-            return Number(right?.version || 0) - Number(left?.version || 0);
+            return Number(Boolean(right?.owned)) - Number(Boolean(left?.owned));
         });
         const canDeleteRows = canManageDownloads && sortedVersions.some(version => version && version.deletable);
         const versionRows = sortedVersions.map(version => {
