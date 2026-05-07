@@ -1,3 +1,4 @@
+from app.downloads.resolver import resolve_download_url
 from app.downloads.torrent_client import (
     add_torrent,
     list_active as list_active_torrents,
@@ -90,12 +91,16 @@ def queue_download(protocol, client_cfg, download_url, timeout_seconds=15, **kwa
     common_kwargs = _get_common_client_kwargs(client_cfg)
     queue_options = _get_queue_download_options(kwargs)
     if _is_torrent_client(protocol, client_type):
+        resolved_type, resolved_data = resolve_download_url(download_url, timeout=timeout_seconds)
+        effective_url = resolved_data if resolved_type in ("url", "magnet") else download_url
+        torrent_content = resolved_data if resolved_type == "torrent_content" else None
         return add_torrent(
             client_type=client_type,
             url=common_kwargs["url"],
             username=common_kwargs["username"],
             password=common_kwargs["password"],
-            download_url=download_url,
+            download_url=effective_url,
+            torrent_content=torrent_content,
             category=common_kwargs["category"],
             download_path=common_kwargs["download_path"],
             timeout_seconds=timeout_seconds,

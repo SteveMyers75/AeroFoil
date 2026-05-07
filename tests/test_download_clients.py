@@ -219,6 +219,30 @@ class QueueRoutingTests(unittest.TestCase):
         self.assertEqual(queue_download_mock.call_args.args[0], "usenet")
         self.assertEqual(queue_download_mock.call_args.args[1]["url"], "http://sab.local")
 
+    @patch("app.downloads.client.add_torrent")
+    @patch("app.downloads.client.resolve_download_url")
+    def test_queue_download_forwards_resolved_torrent_content(self, resolve_download_url_mock, add_torrent_mock):
+        resolve_download_url_mock.return_value = ("torrent_content", b"d8:announce5:testee")
+        add_torrent_mock.return_value = (True, "ok", "abc123")
+
+        ok, message, item_id = queue_download(
+            "torrent",
+            {
+                "type": "qbittorrent",
+                "url": "http://torrent.local",
+                "username": "user",
+                "password": "pass",
+                "category": "aerofoil",
+                "download_path": "X:\\fixture-root\\downloads",
+            },
+            "https://indexer.example/download/123",
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "ok")
+        self.assertEqual(item_id, "abc123")
+        self.assertEqual(add_torrent_mock.call_args.kwargs["torrent_content"], b"d8:announce5:testee")
+
     @patch("app.downloads.manager.queue_download")
     @patch("app.downloads.manager.load_settings")
     def test_manual_usenet_update_queue_does_not_use_update_only(self, load_settings_mock, queue_download_mock):

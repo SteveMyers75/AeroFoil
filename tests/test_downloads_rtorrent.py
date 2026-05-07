@@ -64,7 +64,7 @@ class RTorrentClientTests(unittest.TestCase):
 
     @patch("app.downloads.torrent_client._rtorrent_xmlrpc")
     def test_list_active_rtorrent_returns_only_managed_incomplete(self, rpc_mock):
-        def fake_rpc(url, method, params=None, timeout_seconds=10):
+        def fake_rpc(url, method, params=None, timeout_seconds=10, username=None, password=None):
             torrent_hash = (params or [None])[0]
             if method == "download_list":
                 return True, None, ["hashA", "hashB"]
@@ -103,7 +103,7 @@ class RTorrentClientTests(unittest.TestCase):
 
     @patch("app.downloads.torrent_client._rtorrent_xmlrpc")
     def test_list_completed_rtorrent_returns_only_managed_complete(self, rpc_mock):
-        def fake_rpc(url, method, params=None, timeout_seconds=10):
+        def fake_rpc(url, method, params=None, timeout_seconds=10, username=None, password=None):
             torrent_hash = (params or [None])[0]
             if method == "download_list":
                 return True, None, ["hashA", "hashB"]

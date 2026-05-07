@@ -29,7 +29,7 @@ class _FakeSession:
         self._files_by_hash = dict(files_by_hash or {})
         self.file_prio_calls = []
 
-    def post(self, url, data=None, timeout=None):
+    def post(self, url, data=None, timeout=None, files=None):
         if url.endswith("/api/v2/auth/login"):
             return _FakeResponse(status_code=200, text="Ok.")
         if url.endswith("/api/v2/torrents/add"):
@@ -76,6 +76,7 @@ class QBittorrentAddTests(unittest.TestCase):
                 username="admin",
                 password="admin",
                 download_url=self.magnet_url,
+                torrent_content=None,
                 category="aerofoil",
                 download_path="",
                 timeout_seconds=1,
@@ -111,6 +112,7 @@ class QBittorrentAddTests(unittest.TestCase):
                 username="admin",
                 password="admin",
                 download_url=self.magnet_url,
+                torrent_content=None,
                 category="aerofoil",
                 download_path="",
                 timeout_seconds=1,
@@ -135,6 +137,7 @@ class QBittorrentAddTests(unittest.TestCase):
                 username="admin",
                 password="admin",
                 download_url=self.magnet_url,
+                torrent_content=None,
                 category="aerofoil",
                 download_path="",
                 timeout_seconds=1,
@@ -148,6 +151,42 @@ class QBittorrentAddTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("rejected", message.lower())
         self.assertIsNone(torrent_hash)
+
+    def test_add_accepts_json_success_response_body(self):
+        fake_session = _FakeSession(
+            add_text='{"added_torrent_ids":["73df2afe59383c76ef9edb736273058afdf46ec1"],"failure_count":0,"pending_count":0,"success_count":1}',
+            info_by_hash={
+                self.magnet_hash: {
+                    "hash": self.magnet_hash,
+                    "name": "Test Title",
+                    "tags": "aerofoil",
+                    "added_on": 123,
+                }
+            },
+            managed_items=[],
+        )
+        with patch.object(torrent_client.requests, "Session", return_value=fake_session), patch.object(
+            torrent_client.time, "sleep", lambda _seconds: None
+        ):
+            ok, message, torrent_hash = torrent_client._add_qbittorrent(
+                url=self.base_url,
+                username="admin",
+                password="admin",
+                download_url=self.magnet_url,
+                torrent_content=None,
+                category="aerofoil",
+                download_path="",
+                timeout_seconds=1,
+                expected_name="Test Title",
+                update_only=False,
+                exclude_russian=False,
+                expected_update_number=None,
+                expected_version=None,
+            )
+
+        self.assertTrue(ok)
+        self.assertIn("accepted", message.lower())
+        self.assertEqual(torrent_hash, self.magnet_hash)
 
     def test_select_update_file_indices_matches_semantic_version_when_internal_tag_missing(self):
         selected = torrent_client._select_update_file_indices(
