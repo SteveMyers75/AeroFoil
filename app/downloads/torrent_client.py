@@ -4,6 +4,7 @@ import logging
 import re
 import secrets
 import time
+import xmlrpc.client
 from urllib.parse import urlencode
 
 import requests
@@ -109,6 +110,28 @@ def _login_qbittorrent(session, base, username=None, password=None, timeout_seco
     return login_resp.status_code == 200 and login_resp.text.strip() in ("Ok.", "")
 
 
+def _rtorrent_xmlrpc(url, method, params=None, timeout_seconds=10):
+    base = url.rstrip("/")
+    endpoint = base if base.lower().endswith("/rpc2") else f"{base}/RPC2"
+    payload = xmlrpc.client.dumps(tuple(params or []), methodname=method)
+    headers = {"Content-Type": "text/xml", "User-Agent": DOWNLOADS_USER_AGENT}
+    resp = requests.post(endpoint, data=payload.encode("utf-8"), headers=headers, timeout=timeout_seconds)
+    if resp.status_code != 200:
+        return False, f"rTorrent returned {resp.status_code}.", None
+    try:
+        parsed_params, _method = xmlrpc.client.loads(resp.content)
+    except Exception as exc:
+        return False, f"rTorrent XML-RPC parse error: {exc}", None
+    return True, None, parsed_params[0] if parsed_params else None
+
+
+def _build_rtorrent_managed_label(category):
+    category_text = str(category or "").strip()
+    if category_text:
+        return f"{AEROFOIL_MANAGED_TAG}:{category_text}"
+    return AEROFOIL_MANAGED_TAG
+
+
 def test_torrent_client(client_type, url, username=None, password=None, timeout_seconds=10):
     if not url:
         return False, "Client URL is required."
@@ -119,6 +142,8 @@ def test_torrent_client(client_type, url, username=None, password=None, timeout_
         return _test_transmission(url, username, password, timeout_seconds)
     if client_type == "deluge":
         return _test_deluge(url, password, timeout_seconds)
+    if client_type == "rtorrent":
+        return _test_rtorrent(url, timeout_seconds)
     return False, UNSUPPORTED_CLIENT_TYPE_MESSAGE
 
 
@@ -132,6 +157,18 @@ def add_torrent(client_type, url, username=None, password=None, download_url=Non
         return _add_transmission(url, username, password, download_url, category, download_path, timeout_seconds, expected_name, update_only, exclude_russian, expected_update_number, expected_version)
     if client_type == "deluge":
         return _add_deluge(url, password, download_url, category, download_path, timeout_seconds, update_only, exclude_russian, expected_update_number, expected_version)
+    if client_type == "rtorrent":
+        return _add_rtorrent(
+            url,
+            download_url,
+            category,
+            download_path,
+            timeout_seconds,
+            update_only,
+            exclude_russian,
+            expected_update_number,
+            expected_version,
+        )
     return False, UNSUPPORTED_CLIENT_TYPE_MESSAGE, None
 
 
@@ -143,6 +180,8 @@ def list_completed(client_type, url, username=None, password=None, category=None
         return _list_completed_transmission(url, username, password, category, download_path, timeout_seconds)
     if client_type == "deluge":
         return _list_completed_deluge(url, password, category, download_path, timeout_seconds)
+    if client_type == "rtorrent":
+        return _list_completed_rtorrent(url, category, download_path, timeout_seconds)
     return []
 
 
@@ -154,6 +193,8 @@ def list_active(client_type, url, username=None, password=None, category=None, d
         return _list_active_transmission(url, username, password, category, download_path, timeout_seconds)
     if client_type == "deluge":
         return _list_active_deluge(url, password, category, download_path, timeout_seconds)
+    if client_type == "rtorrent":
+        return _list_active_rtorrent(url, category, download_path, timeout_seconds)
     return []
 
 
@@ -167,6 +208,8 @@ def remove_torrent(client_type, url, torrent_hash, username=None, password=None,
         return _remove_transmission(url, username, password, torrent_hash, timeout_seconds, delete_files=delete_files)
     if client_type == "deluge":
         return _remove_deluge(url, password, torrent_hash, timeout_seconds, delete_files=delete_files)
+    if client_type == "rtorrent":
+        return _remove_rtorrent(url, torrent_hash, timeout_seconds, delete_files=delete_files)
     return False, UNSUPPORTED_CLIENT_TYPE_MESSAGE
 
 
@@ -229,6 +272,14 @@ def _test_deluge(url, password=None, timeout_seconds=10):
     if isinstance(result, dict):
         version = result.get("daemon_version") or result.get("version")
     return True, f"Deluge OK{f' (v{version})' if version else ''}."
+
+
+def _test_rtorrent(url, timeout_seconds=10):
+    ok, error, version = _rtorrent_xmlrpc(url, "system.client_version", [], timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error or "rTorrent returned an error."
+    version_text = str(version or "").strip()
+    return True, f"rTorrent OK{f' (v{version_text})' if version_text else ''}."
 
 
 def _add_deluge(url, password, download_url, category, download_path, timeout_seconds, update_only, exclude_russian, expected_update_number, expected_version):
@@ -300,6 +351,63 @@ def _add_deluge(url, password, download_url, category, download_path, timeout_se
             timeout_seconds=timeout_seconds
         )
     return True, "Deluge accepted torrent.", torrent_hash
+
+
+def _add_rtorrent(
+    url,
+    download_url,
+    category,
+    download_path,
+    timeout_seconds,
+    update_only,
+    exclude_russian,
+    expected_update_number,
+    expected_version,
+):
+    preflight_files = None
+    if update_only:
+        preflight_files = _get_torrent_file_list(download_url, timeout_seconds)
+        if not preflight_has_matching_update(
+            preflight_files,
+            expected_update_number=expected_update_number,
+            expected_version=expected_version,
+            exclude_russian=exclude_russian,
+        ):
+            return False, TORRENT_UPDATE_SELECTION_ERROR, None
+
+    managed_label = _build_rtorrent_managed_label(category)
+    ok, error, _result = _rtorrent_xmlrpc(
+        url,
+        "load.start_verbose",
+        ["", download_url],
+        timeout_seconds=timeout_seconds,
+    )
+    if not ok:
+        return False, error or "rTorrent add failed.", None
+
+    torrent_hash = _compute_torrent_infohash(download_url, timeout_seconds) or _extract_magnet_hash(download_url)
+    if update_only and torrent_hash:
+        _rtorrent_xmlrpc(url, "d.stop", [torrent_hash], timeout_seconds=timeout_seconds)
+    if torrent_hash:
+        _rtorrent_xmlrpc(url, "d.custom1.set", [torrent_hash, managed_label], timeout_seconds=timeout_seconds)
+        if download_path:
+            _rtorrent_xmlrpc(url, "d.directory.set", [torrent_hash, download_path], timeout_seconds=timeout_seconds)
+    if update_only:
+        if not torrent_hash:
+            return False, "Unable to resolve torrent hash for file selection.", None
+        selected = _select_rtorrent_highest_version(
+            url,
+            torrent_hash,
+            timeout_seconds,
+            exclude_russian=exclude_russian,
+            expected_update_number=expected_update_number,
+            expected_version=expected_version,
+        )
+        if not selected:
+            _remove_rtorrent(url, torrent_hash, timeout_seconds, delete_files=True)
+            return False, TORRENT_UPDATE_SELECTION_ERROR, None
+        _rtorrent_xmlrpc(url, "d.start", [torrent_hash], timeout_seconds=timeout_seconds)
+    return True, "rTorrent accepted torrent.", torrent_hash
 
 
 def _add_qbittorrent(url, username, password, download_url, category, download_path, timeout_seconds, expected_name, update_only, exclude_russian, expected_update_number, expected_version):
@@ -670,6 +778,74 @@ def _list_active_deluge(url, password, category, download_path, timeout_seconds)
     return active
 
 
+def _list_rtorrent_with_state(url, category, download_path, timeout_seconds, include_completed):
+    ok, error, hashes = _rtorrent_xmlrpc(url, "download_list", [], timeout_seconds=timeout_seconds)
+    if not ok or not isinstance(hashes, list):
+        return []
+
+    expected_label = _build_rtorrent_managed_label(category) if category else None
+    filtered = []
+    for torrent_hash in hashes:
+        torrent_hash = str(torrent_hash or "").strip()
+        if not torrent_hash:
+            continue
+        ok_label, _, label = _rtorrent_xmlrpc(url, "d.custom1", [torrent_hash], timeout_seconds=timeout_seconds)
+        if not ok_label or not _is_deluge_managed_label(label):
+            continue
+        if expected_label and str(label or "").strip().lower() != expected_label.lower():
+            continue
+
+        ok_name, _, name = _rtorrent_xmlrpc(url, "d.name", [torrent_hash], timeout_seconds=timeout_seconds)
+        ok_dir, _, directory = _rtorrent_xmlrpc(url, "d.directory", [torrent_hash], timeout_seconds=timeout_seconds)
+        if not ok_name:
+            name = torrent_hash
+        if not ok_dir:
+            directory = ""
+        name = str(name or "").strip()
+        directory = str(directory or "").strip()
+        content_path = os.path.join(directory.rstrip("/\\"), name) if directory and name else None
+        if download_path and not _is_path_within(content_path or directory, download_path):
+            continue
+
+        ok_complete, _, complete = _rtorrent_xmlrpc(url, "d.complete", [torrent_hash], timeout_seconds=timeout_seconds)
+        is_completed = bool(_to_int(complete, 0)) if ok_complete else False
+        if include_completed != is_completed:
+            continue
+
+        if include_completed:
+            filtered.append({"hash": torrent_hash, "path": content_path, "name": name})
+            continue
+
+        ok_bytes_done, _, bytes_done = _rtorrent_xmlrpc(url, "d.bytes_done", [torrent_hash], timeout_seconds=timeout_seconds)
+        ok_size, _, size_bytes = _rtorrent_xmlrpc(url, "d.size_bytes", [torrent_hash], timeout_seconds=timeout_seconds)
+        ok_down, _, down_speed = _rtorrent_xmlrpc(url, "d.down.rate", [torrent_hash], timeout_seconds=timeout_seconds)
+        ok_up, _, up_speed = _rtorrent_xmlrpc(url, "d.up.rate", [torrent_hash], timeout_seconds=timeout_seconds)
+        ok_peers, _, peers = _rtorrent_xmlrpc(url, "d.peers_connected", [torrent_hash], timeout_seconds=timeout_seconds)
+
+        total_size = _to_int(size_bytes, 0) if ok_size else 0
+        downloaded = _to_int(bytes_done, 0) if ok_bytes_done else 0
+        progress = 0.0 if total_size <= 0 else max(0.0, min((float(downloaded) / float(total_size)) * 100.0, 100.0))
+        filtered.append({
+            "hash": torrent_hash,
+            "name": name,
+            "status": "downloading",
+            "progress": progress,
+            "down_speed": _to_int(down_speed, 0) if ok_down else 0,
+            "up_speed": _to_int(up_speed, 0) if ok_up else 0,
+            "peers": _to_int(peers, 0) if ok_peers else 0,
+            "seeders": 0,
+            "leechers": 0,
+            "eta": -1,
+            "size": total_size,
+            "downloaded": downloaded,
+        })
+    return filtered
+
+
+def _list_active_rtorrent(url, category, download_path, timeout_seconds):
+    return _list_rtorrent_with_state(url, category, download_path, timeout_seconds, include_completed=False)
+
+
 def _list_completed_qbittorrent(url, username, password, category, download_path, timeout_seconds):
     base = url.rstrip("/")
     session = _new_client_session()
@@ -800,6 +976,10 @@ def _list_completed_deluge(url, password, category, download_path, timeout_secon
     return completed
 
 
+def _list_completed_rtorrent(url, category, download_path, timeout_seconds):
+    return _list_rtorrent_with_state(url, category, download_path, timeout_seconds, include_completed=True)
+
+
 def _build_deluge_managed_label(category):
     if category:
         return f"{AEROFOIL_MANAGED_TAG}:{category}"
@@ -873,6 +1053,15 @@ def _remove_deluge(url, password, torrent_hash, timeout_seconds, delete_files=Fa
     if not ok:
         return False, "Deluge returned an error."
     return True, "Deluge removed torrent."
+
+
+def _remove_rtorrent(url, torrent_hash, timeout_seconds, delete_files=False):
+    _rtorrent_xmlrpc(url, "d.stop", [torrent_hash], timeout_seconds=timeout_seconds)
+    method = "d.erase" if delete_files else "d.close"
+    ok, error, _result = _rtorrent_xmlrpc(url, method, [torrent_hash], timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error or "rTorrent returned an error."
+    return True, "rTorrent removed torrent."
 
 
 def _extract_magnet_hash(magnet_url):
@@ -1306,6 +1495,63 @@ def _fetch_deluge_file_names(url, password, torrent_hash, timeout_seconds):
         return []
     files = status.get("files") or []
     return [f.get("path") for f in files]
+
+
+def _fetch_rtorrent_file_entries(url, torrent_hash, timeout_seconds):
+    ok, _error, rows = _rtorrent_xmlrpc(
+        url,
+        "f.multicall",
+        [torrent_hash, "", "f.path=", "f.priority="],
+        timeout_seconds=timeout_seconds,
+    )
+    if not ok or not isinstance(rows, list):
+        return []
+    entries = []
+    for idx, row in enumerate(rows):
+        if isinstance(row, (list, tuple)):
+            path = row[0] if len(row) > 0 else ""
+        else:
+            path = row
+        entries.append((idx, str(path or "")))
+    return entries
+
+
+def _fetch_rtorrent_file_names(url, torrent_hash, timeout_seconds):
+    return [name for _entry_id, name in _fetch_rtorrent_file_entries(url, torrent_hash, timeout_seconds)]
+
+
+def _set_rtorrent_file_priority(url, torrent_hash, file_id, priority, timeout_seconds):
+    for method in ("f.priority.set", "f.set_priority"):
+        ok, _error, _result = _rtorrent_xmlrpc(
+            url,
+            method,
+            [torrent_hash, int(file_id), int(priority)],
+            timeout_seconds=timeout_seconds,
+        )
+        if ok:
+            return True
+    return False
+
+
+def _select_rtorrent_highest_version(url, torrent_hash, timeout_seconds, exclude_russian, expected_update_number=None, expected_version=None):
+    file_entries = _fetch_rtorrent_file_entries(url, torrent_hash, timeout_seconds)
+    if not file_entries:
+        return False
+    keep_ids = set(
+        select_update_entry_ids(
+            file_entries,
+            expected_update_number=expected_update_number,
+            expected_version=expected_version,
+            exclude_russian=exclude_russian,
+        )
+    )
+    if not keep_ids:
+        return False
+    for file_id, _name in file_entries:
+        _set_rtorrent_file_priority(url, torrent_hash, file_id, 0, timeout_seconds)
+    for file_id in keep_ids:
+        _set_rtorrent_file_priority(url, torrent_hash, file_id, 1, timeout_seconds)
+    return True
 
 
 def _fetch_transmission_file_names(request_fn, torrent_id):

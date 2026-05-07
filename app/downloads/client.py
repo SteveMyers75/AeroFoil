@@ -20,7 +20,7 @@ from app.downloads.constants import (
 )
 
 
-TORRENT_CLIENT_TYPES = {"qbittorrent", "transmission", "deluge"}
+TORRENT_CLIENT_TYPES = {"qbittorrent", "transmission", "deluge", "rtorrent"}
 USENET_CLIENT_TYPES = {"sabnzbd"}
 DOWNLOAD_QUEUE_OPTION_KEYS = (
     "expected_name",
