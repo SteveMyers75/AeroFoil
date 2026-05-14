@@ -1514,6 +1514,10 @@ def _save_sync_title_dir(user, title_id):
     return os.path.join(_save_sync_user_dir(user), title_id)
 
 
+def _save_sync_latest_dir(user, title_id):
+    return os.path.join(_save_sync_title_dir(user, title_id), 'latest')
+
+
 def _save_sync_archive_path(user, title_id, save_id=None):
     if save_id:
         return os.path.join(_save_sync_title_dir(user, title_id), f'{save_id}.zip')
@@ -1585,6 +1589,74 @@ def _save_sync_write_metadata(path, data):
     with open(temp_path, 'w', encoding='utf-8') as handle:
         json.dump(data, handle, ensure_ascii=False, separators=(',', ':'))
     os.replace(temp_path, path)
+
+
+def _save_sync_safe_extract_zip(archive_path, dest_dir):
+    with zipfile.ZipFile(archive_path, 'r') as archive:
+        names = archive.namelist()
+        if not names:
+            raise ValueError('Save archive is empty.')
+        os.makedirs(dest_dir, exist_ok=True)
+        dest_root = os.path.abspath(dest_dir)
+        for member in archive.infolist():
+            member_name = str(member.filename or '')
+            if not member_name or member_name.endswith('/'):
+                continue
+            normalized = member_name.replace('\\', '/')
+            target_path = os.path.abspath(os.path.normpath(os.path.join(dest_root, normalized)))
+            if not (target_path == dest_root or target_path.startswith(dest_root + os.sep)):
+                raise ValueError('Save archive contains invalid path traversal entry.')
+            parent_dir = os.path.dirname(target_path)
+            os.makedirs(parent_dir, exist_ok=True)
+            with archive.open(member, 'r') as src, open(target_path, 'wb') as dst:
+                shutil.copyfileobj(src, dst)
+
+
+def _save_sync_clear_directory(path):
+    if not os.path.isdir(path):
+        return
+    for entry in os.listdir(path):
+        entry_path = os.path.join(path, entry)
+        try:
+            if os.path.isdir(entry_path):
+                shutil.rmtree(entry_path)
+            else:
+                os.remove(entry_path)
+        except Exception:
+            continue
+
+
+def _save_sync_refresh_latest_from_archive(user, title_id, archive_path):
+    latest_dir = _save_sync_latest_dir(user, title_id)
+    os.makedirs(latest_dir, exist_ok=True)
+    temp_dir = os.path.join(_save_sync_title_dir(user, title_id), '.latest_tmp')
+    if os.path.isdir(temp_dir):
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    os.makedirs(temp_dir, exist_ok=True)
+    try:
+        _save_sync_safe_extract_zip(archive_path, temp_dir)
+        _save_sync_clear_directory(latest_dir)
+        for entry in os.listdir(temp_dir):
+            src = os.path.join(temp_dir, entry)
+            dst = os.path.join(latest_dir, entry)
+            os.replace(src, dst)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _save_sync_refresh_latest_for_title(user, title_id):
+    versions = _save_sync_collect_versions_for_title(user, title_id)
+    latest_archive = None
+    for version in versions:
+        archive_path = str(version.get('archive_path') or '')
+        if archive_path and os.path.isfile(archive_path):
+            latest_archive = archive_path
+            break
+    latest_dir = _save_sync_latest_dir(user, title_id)
+    if not latest_archive:
+        _save_sync_clear_directory(latest_dir)
+        return
+    _save_sync_refresh_latest_from_archive(user, title_id, latest_archive)
 
 
 def _save_sync_collect_versions_for_title(user, title_id):
@@ -5146,6 +5218,16 @@ def upload_save_api(title_id):
         _save_sync_write_metadata(_save_sync_metadata_path(user, normalized_title_id, save_id), metadata)
     except Exception as e:
         logger.warning('Failed writing save metadata for user %s title %s save %s: %s', getattr(user, 'user', '?'), normalized_title_id, save_id, e)
+    try:
+        _save_sync_refresh_latest_from_archive(user, normalized_title_id, archive_path)
+    except Exception as e:
+        logger.warning(
+            'Failed to refresh latest extracted save for user %s title %s save %s: %s',
+            getattr(user, 'user', '?'),
+            normalized_title_id,
+            save_id,
+            e,
+        )
 
     return api_success({
         'title_id': normalized_title_id,
@@ -5236,6 +5318,15 @@ def delete_save_api(title_id, save_id=None):
 
     deleted_save_id = str(deleted_info.get('save_id') or '')
     is_legacy = bool(deleted_info.get('legacy'))
+    try:
+        _save_sync_refresh_latest_for_title(user, normalized_title_id)
+    except Exception as e:
+        logger.warning(
+            'Failed to refresh latest extracted save after delete for user %s title %s: %s',
+            getattr(user, 'user', '?'),
+            normalized_title_id,
+            e,
+        )
     return api_success({
         'title_id': normalized_title_id,
         'titleId': normalized_title_id,
