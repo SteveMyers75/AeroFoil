@@ -24,7 +24,7 @@ from datetime import timedelta, datetime
 flask.cli.show_server_banner = lambda *args: None
 from app.constants import *
 from app.settings import *
-from app.downloads import ProwlarrClient, filter_results, test_download_client, run_downloads_job, manual_search_update, queue_download_url, search_update_options, check_completed_downloads, get_downloads_state, get_active_downloads, get_download_ui_visibility, filter_download_search_results, sort_download_search_results, remove_pending_download
+from app.downloads import ProwlarrClient, filter_results, test_download_client, get_supported_download_clients, get_download_client_capabilities, get_download_client_diagnostics, run_downloads_job, manual_search_update, queue_download_url, search_update_options, check_completed_downloads, get_downloads_state, get_active_downloads, get_download_ui_visibility, filter_download_search_results, sort_download_search_results, remove_pending_download
 from app.library import organize_library, delete_older_updates, delete_duplicates, delete_library_content, delete_orphaned_addons
 from app.db import *
 from app.shop import *
@@ -3914,6 +3914,8 @@ def get_settings_api():
             settings['library']['maintenance_last_run'] = last_run.isoformat() if last_run else None
     except Exception:
         pass
+    settings.setdefault('downloads', {})
+    settings['downloads']['client_capabilities'] = get_supported_download_clients()
     return jsonify(settings)
 
 @app.post('/api/settings/titles')
@@ -4265,6 +4267,17 @@ def test_downloads_prowlarr_api():
 @access_required('admin')
 def test_downloads_client_api():
     data = request.json or {}
+    diagnostics = get_download_client_diagnostics(
+        '',
+        {
+            'type': data.get('type', ''),
+            'url': data.get('url', ''),
+            'username': data.get('username', ''),
+            'password': data.get('password', ''),
+            'api_key': data.get('api_key', ''),
+        }
+    ) or {}
+    capabilities = diagnostics.get('capabilities') or {}
     ok, message = test_download_client(
         client_type=data.get('type', ''),
         url=data.get('url', ''),
@@ -4274,12 +4287,18 @@ def test_downloads_client_api():
     )
     download_path = (data.get('download_path') or '').strip()
     warning = None
-    if ok and download_path:
+    supports_download_path = bool(capabilities.get('supports_download_path'))
+    if ok and download_path and supports_download_path:
         if not os.path.isdir(download_path):
             warning = f"Download path not found: {download_path}"
         elif not os.access(download_path, os.W_OK):
             warning = f"Download path not writable: {download_path}"
-    return jsonify({'success': ok, 'message': message, 'warning': warning})
+    return jsonify({
+        'success': ok,
+        'message': message,
+        'warning': warning,
+        'diagnostics': diagnostics,
+    })
 
 @app.post('/api/downloads/manual')
 @access_required('admin')

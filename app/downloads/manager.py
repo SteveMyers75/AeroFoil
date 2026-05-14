@@ -13,8 +13,8 @@ from app.constants import ALLOWED_EXTENSIONS, APP_TYPE_BASE, APP_TYPE_DLC, APP_T
 from app.constants import DATA_DIR
 from app.db import get_all_title_apps, get_all_titles, get_libraries_path
 from app.downloads.client import (
-    TORRENT_CLIENT_TYPES,
-    USENET_CLIENT_TYPES,
+    get_download_client_capabilities,
+    get_download_client_diagnostics,
     list_active_downloads,
     list_completed_downloads,
     list_history_downloads,
@@ -108,12 +108,19 @@ def _get_protocol_client_cfg(downloads, protocol):
 
 def _is_protocol_client_configured(downloads, protocol):
     client_cfg = _get_protocol_client_cfg(downloads, protocol)
-    client_type = str(client_cfg.get("type") or "").strip().lower()
-    if protocol == "torrent":
-        return bool(client_cfg.get("url") and client_type in TORRENT_CLIENT_TYPES)
-    if protocol == "usenet":
-        return bool(client_cfg.get("url") and client_cfg.get("api_key") and client_type in USENET_CLIENT_TYPES)
-    return False
+    diagnostics = get_download_client_diagnostics(protocol, client_cfg)
+    capabilities = (diagnostics or {}).get("capabilities")
+    if not isinstance(capabilities, dict):
+        return False
+    resolved_protocol = str(capabilities.get("protocol") or "").strip().lower()
+    if resolved_protocol != str(protocol or "").strip().lower():
+        return False
+    missing = set(str(field or "").strip().lower() for field in ((diagnostics or {}).get("missing") or []))
+    if "url" in missing:
+        return False
+    if resolved_protocol == "usenet":
+        return not any(field in missing for field in ("api_key", "username", "password"))
+    return True
 
 
 def _get_configured_protocols(downloads):

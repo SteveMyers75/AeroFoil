@@ -6,7 +6,14 @@ import unittest
 from unittest.mock import patch
 
 import app.downloads.manager as downloads_manager
-from app.downloads.client import queue_download, remove_active_download, remove_completed_download
+from app.downloads.client import (
+    get_download_client_diagnostics,
+    get_download_client_capabilities,
+    get_supported_download_clients,
+    queue_download,
+    remove_active_download,
+    remove_completed_download,
+)
 from app.downloads.manager import (
     _check_completed,
     _adopt_untracked_completed_item,
@@ -80,6 +87,45 @@ class ProwlarrProtocolTests(unittest.TestCase):
 
 
 class QueueRoutingTests(unittest.TestCase):
+    def test_supported_download_clients_includes_torrent_and_usenet(self):
+        supported = get_supported_download_clients()
+        keys = {(item.get("protocol"), item.get("type")) for item in supported}
+        self.assertIn(("torrent", "qbittorrent"), keys)
+        self.assertIn(("torrent", "transmission"), keys)
+        self.assertIn(("torrent", "deluge"), keys)
+        self.assertIn(("torrent", "rtorrent"), keys)
+        self.assertIn(("usenet", "sabnzbd"), keys)
+        self.assertIn(("usenet", "nzbget"), keys)
+
+    def test_get_download_client_capabilities_resolves_by_type_when_protocol_missing(self):
+        caps = get_download_client_capabilities("", {"type": "rtorrent"})
+        self.assertIsNotNone(caps)
+        self.assertEqual(caps["protocol"], "torrent")
+        self.assertEqual(caps["type"], "rtorrent")
+        self.assertTrue(caps["supports_categories"])
+        self.assertTrue(caps["supports_download_path"])
+
+    def test_get_download_client_diagnostics_reports_missing_required_fields(self):
+        diag = get_download_client_diagnostics("", {"type": "rtorrent", "url": ""})
+        self.assertTrue(diag["supported"])
+        self.assertEqual(diag["protocol"], "torrent")
+        self.assertEqual(diag["type"], "rtorrent")
+        self.assertIn("url", diag["missing"])
+        self.assertIn("username", diag["missing"])
+        self.assertIn("password", diag["missing"])
+
+    def test_get_download_client_diagnostics_for_deluge_does_not_require_username(self):
+        diag = get_download_client_diagnostics("", {"type": "deluge", "url": "http://deluge.local", "password": "x"})
+        self.assertTrue(diag["supported"])
+        self.assertEqual(diag["missing"], [])
+
+    def test_get_download_client_diagnostics_for_nzbget_requires_username_and_password(self):
+        diag = get_download_client_diagnostics("", {"type": "nzbget", "url": "http://nzbget.local"})
+        self.assertTrue(diag["supported"])
+        self.assertEqual(diag["protocol"], "usenet")
+        self.assertIn("username", diag["missing"])
+        self.assertIn("password", diag["missing"])
+
     def test_get_download_ui_visibility_handles_all_protocol_configurations(self):
         cases = [
             (
@@ -1033,8 +1079,29 @@ class QueueRoutingTests(unittest.TestCase):
         self.assertEqual(item_id, "abc123")
         add_torrent_mock.assert_called_once()
         self.assertEqual(add_torrent_mock.call_args.kwargs["client_type"], "qbittorrent")
-        self.assertEqual(add_torrent_mock.call_args.kwargs["download_path"], "X:\\fixture-root\\downloads")
-        self.assertTrue(add_torrent_mock.call_args.kwargs["update_only"])
+
+    @patch("app.downloads.client.add_nzbget")
+    def test_queue_download_routes_to_nzbget_when_client_type_is_nzbget(self, add_nzbget_mock):
+        add_nzbget_mock.return_value = (True, "ok", "42")
+
+        ok, message, item_id = queue_download(
+            protocol="",
+            client_cfg={
+                "type": "nzbget",
+                "url": "http://nzbget.local",
+                "username": "user",
+                "password": "pass",
+                "category": "aerofoil",
+            },
+            download_url="https://indexer.example/file.nzb",
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "ok")
+        self.assertEqual(item_id, "42")
+        add_nzbget_mock.assert_called_once()
+        self.assertNotIn("download_path", add_nzbget_mock.call_args.kwargs)
+        self.assertFalse(add_nzbget_mock.call_args.kwargs["update_only"])
 
 
 class SabSelectionTests(unittest.TestCase):

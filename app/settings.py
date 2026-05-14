@@ -330,7 +330,7 @@ def _normalize_download_settings(downloads):
     merged['usenet_client'] = _normalize_download_client_config(
         raw_usenet_client,
         defaults.get('usenet_client', {}),
-        allow_credentials=False,
+        allow_credentials=True,
         allow_download_path=False,
         allow_api_key=True,
         shared_category=shared_category,
