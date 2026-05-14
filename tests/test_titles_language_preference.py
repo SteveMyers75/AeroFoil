@@ -319,6 +319,48 @@ class TitlesLanguagePreferenceTests(unittest.TestCase):
         self.assertEqual(info['iconUrl'], f'/api/shop/icon/{title_id}')
         self.assertEqual(info['bannerUrl'], f'/api/shop/banner/{title_id}')
 
+    def test_get_game_info_backfills_missing_titledb_fields_from_local_fallback(self):
+        title_id = '010051F0207B2000'
+        titledb_info = {
+            'name': '',
+            'bannerUrl': 'https://example.invalid/titledb-banner.jpg',
+            'iconUrl': '',
+            'id': title_id,
+            'category': '',
+            'nsuId': None,
+            'description': '',
+        }
+        fallback_info = {
+            'name': 'Example Backfilled Title',
+            'bannerUrl': f'/api/shop/banner/{title_id}',
+            'iconUrl': f'/api/shop/icon/{title_id}',
+            'id': title_id,
+            'category': 'Example Category',
+            'nsuId': '987',
+            'description': 'Publisher: Example Studio',
+            'screenshots': ['https://example.invalid/local-shot.jpg'],
+        }
+
+        with patch(
+            'app.titles.load_settings',
+            return_value={'titles': {'manual_overrides': {}}},
+        ), patch(
+            'app.titles._get_title_info_from_index',
+            return_value=titledb_info,
+        ), patch(
+            'app.titles._build_local_fallback_info',
+            return_value=fallback_info,
+        ):
+            info = titles.get_game_info(title_id)
+
+        self.assertEqual(info['name'], 'Example Backfilled Title')
+        self.assertEqual(info['bannerUrl'], 'https://example.invalid/titledb-banner.jpg')
+        self.assertEqual(info['iconUrl'], f'/api/shop/icon/{title_id}')
+        self.assertEqual(info['category'], 'Example Category')
+        self.assertEqual(info['nsuId'], '987')
+        self.assertEqual(info['description'], 'Publisher: Example Studio')
+        self.assertEqual(info['screenshots'], ['https://example.invalid/local-shot.jpg'])
+
     def test_get_game_info_bridges_dlc_app_lookup_to_base_title_info(self):
         dlc_app_id = '01002E7016C47006'
         base_title_id = '01002E7016C46000'

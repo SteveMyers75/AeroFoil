@@ -925,12 +925,27 @@ def load_titledb():
     global _missing_files_recovery_in_progress
     global _titledb_data_signature
     with _titledb_lock:
+        app_settings = load_settings()
+        required_files = _required_titledb_files(app_settings)
+
         if _titles_db_loaded:
-            identification_in_progress_count += 1
-            return True
+            # Refresh in-memory indexes when TitleDB files changed on disk so
+            # previously unresolved titles can pick up new metadata.
+            missing_files = _missing_titledb_files(required_files)
+            if missing_files:
+                identification_in_progress_count += 1
+                return True
+            current_signature = _build_titledb_data_signature(required_files)
+            if (
+                current_signature == str(_titledb_data_signature or '')
+                or identification_in_progress_count > 0
+            ):
+                identification_in_progress_count += 1
+                return True
+            logger.info("Detected updated TitleDB files on disk. Reloading indexes.")
+            _reset_titledb_state()
 
         logger.info("Loading TitleDBs into memory...")
-        app_settings = load_settings()
 
         # Ensure directory exists before any recovery attempt.
         if not os.path.isdir(TITLEDB_DIR):
@@ -939,7 +954,6 @@ def load_titledb():
             except Exception:
                 pass
 
-        required_files = _required_titledb_files(app_settings)
         missing_files = _missing_titledb_files(required_files)
         if missing_files:
             missing_parts = [f"{label}:{os.path.basename(path)}" for label, path in missing_files]
@@ -1734,13 +1748,39 @@ def get_game_info(title_id):
                 screenshots = _titles_images_by_title_id.get(title_key) or []
             except Exception:
                 screenshots = []
+        merged_title_info = dict(resolved_title_info or {})
+        needs_local_backfill = not str(merged_title_info.get('name') or '').strip()
+        if needs_local_backfill:
+            local_info = _build_local_fallback_info(title_key)
+            if isinstance(local_info, dict) and local_info:
+                for key in ('name', 'bannerUrl', 'iconUrl', 'category', 'nsuId'):
+                    current_value = merged_title_info.get(key)
+                    if isinstance(current_value, str):
+                        if current_value.strip():
+                            continue
+                    elif current_value is not None:
+                        continue
+                    fallback_value = local_info.get(key)
+                    if isinstance(fallback_value, str):
+                        if fallback_value.strip():
+                            merged_title_info[key] = fallback_value
+                    elif fallback_value is not None:
+                        merged_title_info[key] = fallback_value
+                if not description:
+                    fallback_description = local_info.get('description')
+                    if isinstance(fallback_description, str) and fallback_description.strip():
+                        description = fallback_description
+                if not screenshots:
+                    fallback_screenshots = local_info.get('screenshots')
+                    if isinstance(fallback_screenshots, list):
+                        screenshots = [str(u).strip() for u in fallback_screenshots if str(u or '').strip()][:12]
         return _apply_manual_title_override(title_id, {
-            'name': resolved_title_info.get('name') or 'Unrecognized',
-            'bannerUrl': resolved_title_info.get('bannerUrl') or '//placehold.it/400x200',
-            'iconUrl': resolved_title_info.get('iconUrl') or '',
-            'id': resolved_title_info.get('id') or title_key,
-            'category': resolved_title_info.get('category') or '',
-            'nsuId': resolved_title_info.get('nsuId'),
+            'name': merged_title_info.get('name') or 'Unrecognized',
+            'bannerUrl': merged_title_info.get('bannerUrl') or '//placehold.it/400x200',
+            'iconUrl': merged_title_info.get('iconUrl') or '',
+            'id': merged_title_info.get('id') or title_key,
+            'category': merged_title_info.get('category') or '',
+            'nsuId': merged_title_info.get('nsuId'),
             'description': description,
             'screenshots': screenshots,
         })
