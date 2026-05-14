@@ -834,9 +834,8 @@ def login():
 
 @auth_blueprint.route('/profile')
 @login_required
-@access_required('backup')
 def profile():
-    return render_template('profile.html')
+    return render_template('profile.html', title='Profile')
 
 @auth_blueprint.route('/api/users')
 @access_required('admin')
@@ -1099,29 +1098,43 @@ def update_user():
 
 @auth_blueprint.route('/api/user/password', methods=['PATCH'])
 @login_required
-@access_required('admin')
 def reset_user_password():
     success = True
     errors = []
     data = request.json or {}
-    user_id = data.get('user_id')
+    requested_user_id = data.get('user_id')
     password = data.get('password')
+    current_password = data.get('current_password')
 
-    if not user_id:
+    requester_id = getattr(current_user, 'id', None)
+    requester_is_admin = bool(getattr(current_user, 'is_admin', False))
+    target_user_id = requested_user_id if requested_user_id not in (None, '') else requester_id
+
+    if not target_user_id:
         errors.append('Missing user id.')
     if not password:
         errors.append('Password is required.')
 
-    user = User.query.filter_by(id=user_id).first() if not errors else None
+    user = User.query.filter_by(id=target_user_id).first() if not errors else None
     if not user:
         errors.append('User not found.')
+    if not requester_is_admin:
+        if user and int(getattr(user, 'id', 0) or 0) != int(requester_id or 0):
+            errors.append('You can only change your own password.')
+        if not current_password:
+            errors.append('Current password is required.')
+        elif user and not check_password_hash(user.password, current_password):
+            errors.append('Current password is incorrect.')
 
     if errors:
         success = False
     else:
         user.password = generate_password_hash(password, method='scrypt')
         db.session.commit()
-        logger.info(f'Successfully reset password for user {user.id} ({user.user}).')
+        if requester_is_admin and int(getattr(user, 'id', 0) or 0) != int(requester_id or 0):
+            logger.info(f'Successfully reset password for user {user.id} ({user.user}).')
+        else:
+            logger.info(f'User {user.id} ({user.user}) changed their password.')
 
     resp = {
         'success': success,
