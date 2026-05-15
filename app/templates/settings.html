@@ -2716,10 +2716,13 @@
                     : '';
                 let text = result['message'] || (ok ? 'Torrent client OK' : 'Torrent client test failed');
                 text = `${text}${diagLabel}`;
+                const detail = String(result['detail'] || '').trim();
                 if (warning) {
                     text = `${text} (${warning})`;
                 }
-                if (!ok && Array.isArray(diagnostics.missing) && diagnostics.missing.length) {
+                if (!ok && detail) {
+                    text = `${text} ${detail}`;
+                } else if (!ok && Array.isArray(diagnostics.missing) && diagnostics.missing.length) {
                     text = `${text} Missing: ${diagnostics.missing.join(', ')}`;
                 }
                 $('#torrentClientTestResult')
@@ -2757,10 +2760,13 @@
                     : '';
                 let text = result['message'] || (ok ? 'Usenet client OK' : 'Usenet client test failed');
                 text = `${text}${diagLabel}`;
+                const detail = String(result['detail'] || '').trim();
                 if (warning) {
                     text = `${text} (${warning})`;
                 }
-                if (!ok && Array.isArray(diagnostics.missing) && diagnostics.missing.length) {
+                if (!ok && detail) {
+                    text = `${text} ${detail}`;
+                } else if (!ok && Array.isArray(diagnostics.missing) && diagnostics.missing.length) {
                     text = `${text} Missing: ${diagnostics.missing.join(', ')}`;
                 }
                 $('#usenetClientTestResult')

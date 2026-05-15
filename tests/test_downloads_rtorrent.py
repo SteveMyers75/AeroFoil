@@ -33,6 +33,41 @@ class RTorrentClientTests(unittest.TestCase):
         self.assertEqual(message, "rTorrent accepted torrent.")
         self.assertEqual(item_id, "abcdef")
         select_mock.assert_called_once()
+        load_call = next(call for call in rpc_mock.call_args_list if call.args[1] == "load.start_verbose")
+        self.assertIn("d.custom1.set=aerofoil", load_call.args[2])
+
+    @patch("app.downloads.torrent_client._compute_torrent_infohash", return_value=None)
+    @patch("app.downloads.torrent_client._rtorrent_xmlrpc")
+    def test_add_rtorrent_resolves_hash_by_name_when_infohash_unavailable(self, rpc_mock, _infohash_mock):
+        def fake_rpc(url, method, params=None, timeout_seconds=10, username=None, password=None, **kwargs):
+            if method == "load.start_verbose":
+                return True, None, 0
+            if method == "download_list":
+                return True, None, ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+            if method == "d.name":
+                return True, None, "Example Release NSW-GRP"
+            if method == "d.custom1.set":
+                return True, None, 0
+            if method == "d.directory.set":
+                return True, None, 0
+            return True, None, 0
+
+        rpc_mock.side_effect = fake_rpc
+
+        ok, message, item_id = torrent_client.add_torrent(
+            "rtorrent",
+            "http://rtorrent.local",
+            download_url="http://indexer.local/example.torrent",
+            expected_name="Example Release NSW-GRP",
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "rTorrent accepted torrent.")
+        self.assertEqual(item_id, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        called_methods = [call.args[1] for call in rpc_mock.call_args_list]
+        self.assertIn("d.custom1.set", called_methods)
+        load_call = next(call for call in rpc_mock.call_args_list if call.args[1] == "load.start_verbose")
+        self.assertIn("d.custom1.set=aerofoil", load_call.args[2])
 
     @patch("app.downloads.torrent_client._remove_rtorrent")
     @patch("app.downloads.torrent_client._select_rtorrent_highest_version", return_value=False)
@@ -64,7 +99,7 @@ class RTorrentClientTests(unittest.TestCase):
 
     @patch("app.downloads.torrent_client._rtorrent_xmlrpc")
     def test_list_active_rtorrent_returns_only_managed_incomplete(self, rpc_mock):
-        def fake_rpc(url, method, params=None, timeout_seconds=10, username=None, password=None):
+        def fake_rpc(url, method, params=None, timeout_seconds=10, username=None, password=None, **kwargs):
             torrent_hash = (params or [None])[0]
             if method == "download_list":
                 return True, None, ["hashA", "hashB"]
@@ -103,7 +138,7 @@ class RTorrentClientTests(unittest.TestCase):
 
     @patch("app.downloads.torrent_client._rtorrent_xmlrpc")
     def test_list_completed_rtorrent_returns_only_managed_complete(self, rpc_mock):
-        def fake_rpc(url, method, params=None, timeout_seconds=10, username=None, password=None):
+        def fake_rpc(url, method, params=None, timeout_seconds=10, username=None, password=None, **kwargs):
             torrent_hash = (params or [None])[0]
             if method == "download_list":
                 return True, None, ["hashA", "hashB"]
@@ -130,20 +165,82 @@ class RTorrentClientTests(unittest.TestCase):
         self.assertEqual(items[0]["hash"], "hashA")
 
     @patch("app.downloads.torrent_client._rtorrent_xmlrpc")
+    def test_list_completed_rtorrent_keeps_generic_managed_label_when_category_changed(self, rpc_mock):
+        def fake_rpc(url, method, params=None, timeout_seconds=10, username=None, password=None, **kwargs):
+            torrent_hash = (params or [None])[0]
+            if method == "download_list":
+                return True, None, ["hashA"]
+            if method == "d.custom1":
+                return True, None, "aerofoil"
+            if method == "d.name":
+                return True, None, "Example Release"
+            if method == "d.directory":
+                return True, None, "X:/fixture-root/downloads"
+            if method == "d.complete":
+                return True, None, 1 if torrent_hash == "hashA" else 0
+            return False, "unexpected", None
+
+        rpc_mock.side_effect = fake_rpc
+
+        items = torrent_client.list_completed(
+            "rtorrent",
+            "http://rtorrent.local",
+            category="games",
+            download_path="X:/fixture-root",
+        )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["hash"], "hashA")
+
+    @patch("app.downloads.torrent_client._rtorrent_xmlrpc")
+    def test_list_completed_rtorrent_prefers_base_path_over_directory_plus_name(self, rpc_mock):
+        def fake_rpc(url, method, params=None, timeout_seconds=10, username=None, password=None, **kwargs):
+            torrent_hash = (params or [None])[0]
+            if method == "download_list":
+                return True, None, ["hashA"]
+            if method == "d.custom1":
+                return True, None, "aerofoil:games"
+            if method == "d.name":
+                return True, None, "title"
+            if method == "d.directory":
+                return True, None, "/downloads/complete/aerofoil:aerofoil/title"
+            if method == "d.base_path":
+                return True, None, "/downloads/complete/aerofoil:aerofoil/title"
+            if method == "d.complete":
+                return True, None, 1 if torrent_hash == "hashA" else 0
+            return False, "unexpected", None
+
+        rpc_mock.side_effect = fake_rpc
+
+        items = torrent_client.list_completed(
+            "rtorrent",
+            "http://rtorrent.local",
+            category="games",
+            download_path="/downloads/complete",
+        )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["hash"], "hashA")
+        self.assertEqual(items[0]["path"], "/downloads/complete/aerofoil:aerofoil/title")
+
+    @patch("app.downloads.torrent_client._rtorrent_xmlrpc")
     def test_remove_rtorrent_uses_erase_when_delete_files_true(self, rpc_mock):
         rpc_mock.return_value = (True, None, 0)
 
         ok, message = torrent_client.remove_torrent(
             "rtorrent",
             "http://rtorrent.local",
-            "abc123",
+            "ABC123",
             delete_files=True,
         )
 
         self.assertTrue(ok)
         self.assertEqual(message, "rTorrent removed torrent.")
         self.assertEqual(rpc_mock.call_args_list[1].args[1], "d.erase")
+        self.assertEqual(rpc_mock.call_args_list[0].args[2][0], "abc123")
+        self.assertEqual(rpc_mock.call_args_list[1].args[2][0], "abc123")
 
 
 if __name__ == "__main__":
     unittest.main()
+

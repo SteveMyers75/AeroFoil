@@ -103,6 +103,11 @@ def _transmission_request(session, base, payload, timeout_seconds):
 
 
 def _login_qbittorrent(session, base, username=None, password=None, timeout_seconds=10):
+    # qBittorrent Web API requires Referer/Origin on authenticated API requests in newer releases.
+    base_ref = str(base or "").strip().rstrip("/") + "/"
+    if base_ref:
+        session.headers.setdefault("Referer", base_ref)
+        session.headers.setdefault("Origin", base_ref.rstrip("/"))
     if not username and not password:
         return True
     login_resp = session.post(
@@ -110,6 +115,8 @@ def _login_qbittorrent(session, base, username=None, password=None, timeout_seco
         data={"username": username or "", "password": password or ""},
         timeout=timeout_seconds,
     )
+    if login_resp.status_code == 204:
+        return True
     return login_resp.status_code == 200 and login_resp.text.strip() in ("Ok.", "")
 
 
@@ -126,17 +133,17 @@ def _rtorrent_xmlrpc_endpoints(url):
     return [f"{base}/RPC2", f"{base}/RPC1", f"{base}/plugins/rpc/rpc.php"]
 
 
-def _rtorrent_xmlrpc(url, method, params=None, timeout_seconds=10, username=None, password=None):
+def _rtorrent_xmlrpc(url, method, params=None, timeout_seconds=10, username=None, password=None, session=None):
     endpoints = _rtorrent_xmlrpc_endpoints(url)
     if not endpoints:
         return False, "rTorrent URL is invalid.", None
     payload = xmlrpc.client.dumps(tuple(params or []), methodname=method)
     headers = {"Content-Type": "text/xml", "User-Agent": DOWNLOADS_USER_AGENT}
-    session = _new_client_session(username, password)
+    request_session = session or _new_client_session(username, password)
     last_error = "rTorrent returned an error."
     for endpoint in endpoints:
         try:
-            resp = session.post(endpoint, data=payload.encode("utf-8"), headers=headers, timeout=timeout_seconds)
+            resp = request_session.post(endpoint, data=payload.encode("utf-8"), headers=headers, timeout=timeout_seconds)
         except Exception as exc:
             last_error = f"rTorrent request failed: {exc}"
             continue
@@ -159,9 +166,22 @@ def _rtorrent_xmlrpc(url, method, params=None, timeout_seconds=10, username=None
 
 def _build_rtorrent_managed_label(category):
     category_text = str(category or "").strip()
+    if category_text.lower() in MANAGED_TAGS:
+        return AEROFOIL_MANAGED_TAG
     if category_text:
         return f"{AEROFOIL_MANAGED_TAG}:{category_text}"
     return AEROFOIL_MANAGED_TAG
+
+
+def _build_rtorrent_add_commands(category=None, download_path=None):
+    commands = []
+    managed_label = _build_rtorrent_managed_label(category)
+    if managed_label:
+        commands.append(f"d.custom1.set={managed_label}")
+    download_path_text = str(download_path or "").strip()
+    if download_path_text:
+        commands.append(f"d.directory.set={download_path_text}")
+    return commands
 
 
 def test_torrent_client(client_type, url, username=None, password=None, timeout_seconds=10):
@@ -222,6 +242,7 @@ def add_torrent(client_type, url, username=None, password=None, download_url=Non
             exclude_russian,
             expected_update_number,
             expected_version,
+            expected_name,
         )
     if client_type == "utorrent":
         return _add_utorrent(
@@ -1597,7 +1618,10 @@ def _test_qbittorrent(url, username=None, password=None, timeout_seconds=10):
     version_resp = session.get(f"{base}/api/v2/app/version", timeout=timeout_seconds)
     if version_resp.status_code != 200:
         return False, f"qBittorrent returned {version_resp.status_code}."
-    return True, f"qBittorrent OK (v{version_resp.text.strip()})."
+    version_text = str(version_resp.text or "").strip()
+    if version_text.lower().startswith("v"):
+        return True, f"qBittorrent OK ({version_text})."
+    return True, f"qBittorrent OK (v{version_text})."
 
 
 def _test_transmission(url, username=None, password=None, timeout_seconds=10):
@@ -1759,6 +1783,7 @@ def _add_rtorrent(
     exclude_russian,
     expected_update_number,
     expected_version,
+    expected_name=None,
 ):
     preflight_files = None
     if update_only:
@@ -1772,10 +1797,12 @@ def _add_rtorrent(
             return False, TORRENT_UPDATE_SELECTION_ERROR, None
 
     managed_label = _build_rtorrent_managed_label(category)
-    ok, error, _result = _rtorrent_xmlrpc(
+    add_args = ["", download_url]
+    add_args.extend(_build_rtorrent_add_commands(category, download_path))
+    ok, error, add_result = _rtorrent_xmlrpc(
         url,
         "load.start_verbose",
-        ["", download_url],
+        add_args,
         timeout_seconds=timeout_seconds,
         username=username,
         password=password,
@@ -1784,6 +1811,16 @@ def _add_rtorrent(
         return False, error or "rTorrent add failed.", None
 
     torrent_hash = _compute_torrent_infohash(download_url, timeout_seconds) or _extract_magnet_hash(download_url)
+    if not torrent_hash:
+        torrent_hash = _extract_rtorrent_hash(add_result)
+    if not torrent_hash:
+        torrent_hash = _find_recent_rtorrent_hash_by_name(
+            url,
+            expected_name,
+            username,
+            password,
+            timeout_seconds,
+        )
     if update_only and torrent_hash:
         _rtorrent_xmlrpc(url, "d.stop", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
     if torrent_hash:
@@ -1850,7 +1887,7 @@ def _add_qbittorrent(url, username, password, download_url, torrent_content, cat
     if update_only and infohash_v1:
         logger.info("Computed torrent infohash_v1: %s", infohash_v1)
     resp = session.post(f"{base}/api/v2/torrents/add", data=data, files=files, timeout=timeout_seconds)
-    if resp.status_code != 200:
+    if resp.status_code not in (200, 202):
         return False, f"qBittorrent returned {resp.status_code}.", None
     add_response_text = str(resp.text or "").strip()
     if add_response_text and add_response_text.lower() not in ("ok", "ok."):
@@ -2210,7 +2247,16 @@ def _list_active_deluge(url, password, category, download_path, timeout_seconds)
 
 
 def _list_rtorrent_with_state(url, username, password, category, download_path, timeout_seconds, include_completed):
-    ok, error, hashes = _rtorrent_xmlrpc(url, "download_list", [], timeout_seconds=timeout_seconds, username=username, password=password)
+    session = _new_client_session(username, password)
+    ok, error, hashes = _rtorrent_xmlrpc(
+        url,
+        "download_list",
+        [],
+        timeout_seconds=timeout_seconds,
+        username=username,
+        password=password,
+        session=session,
+    )
     if not ok or not isinstance(hashes, list):
         return []
 
@@ -2220,25 +2266,73 @@ def _list_rtorrent_with_state(url, username, password, category, download_path, 
         torrent_hash = str(torrent_hash or "").strip()
         if not torrent_hash:
             continue
-        ok_label, _, label = _rtorrent_xmlrpc(url, "d.custom1", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
+        ok_label, _, label = _rtorrent_xmlrpc(
+            url,
+            "d.custom1",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
         if not ok_label or not _is_deluge_managed_label(label):
             continue
         if expected_label and str(label or "").strip().lower() != expected_label.lower():
-            continue
+            # Keep managed torrents even if the current category config changed after add.
+            raw_label = str(label or "").strip().lower()
+            if raw_label not in MANAGED_TAGS:
+                continue
 
-        ok_name, _, name = _rtorrent_xmlrpc(url, "d.name", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
-        ok_dir, _, directory = _rtorrent_xmlrpc(url, "d.directory", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
+        ok_name, _, name = _rtorrent_xmlrpc(
+            url,
+            "d.name",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
+        ok_dir, _, directory = _rtorrent_xmlrpc(
+            url,
+            "d.directory",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
+        ok_base_path, _, base_path = _rtorrent_xmlrpc(
+            url,
+            "d.base_path",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
         if not ok_name:
             name = torrent_hash
         if not ok_dir:
             directory = ""
         name = str(name or "").strip()
         directory = str(directory or "").strip()
-        content_path = os.path.join(directory.rstrip("/\\"), name) if directory and name else None
+        base_path_text = str(base_path or "").strip() if ok_base_path else ""
+        if base_path_text:
+            content_path = base_path_text
+        else:
+            content_path = os.path.join(directory.rstrip("/\\"), name) if directory and name else None
         if download_path and not _is_path_within(content_path or directory, download_path):
             continue
 
-        ok_complete, _, complete = _rtorrent_xmlrpc(url, "d.complete", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
+        ok_complete, _, complete = _rtorrent_xmlrpc(
+            url,
+            "d.complete",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
         is_completed = bool(_to_int(complete, 0)) if ok_complete else False
         if include_completed != is_completed:
             continue
@@ -2247,11 +2341,51 @@ def _list_rtorrent_with_state(url, username, password, category, download_path, 
             filtered.append({"hash": torrent_hash, "path": content_path, "name": name})
             continue
 
-        ok_bytes_done, _, bytes_done = _rtorrent_xmlrpc(url, "d.bytes_done", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
-        ok_size, _, size_bytes = _rtorrent_xmlrpc(url, "d.size_bytes", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
-        ok_down, _, down_speed = _rtorrent_xmlrpc(url, "d.down.rate", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
-        ok_up, _, up_speed = _rtorrent_xmlrpc(url, "d.up.rate", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
-        ok_peers, _, peers = _rtorrent_xmlrpc(url, "d.peers_connected", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
+        ok_bytes_done, _, bytes_done = _rtorrent_xmlrpc(
+            url,
+            "d.bytes_done",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
+        ok_size, _, size_bytes = _rtorrent_xmlrpc(
+            url,
+            "d.size_bytes",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
+        ok_down, _, down_speed = _rtorrent_xmlrpc(
+            url,
+            "d.down.rate",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
+        ok_up, _, up_speed = _rtorrent_xmlrpc(
+            url,
+            "d.up.rate",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
+        ok_peers, _, peers = _rtorrent_xmlrpc(
+            url,
+            "d.peers_connected",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
 
         total_size = _to_int(size_bytes, 0) if ok_size else 0
         downloaded = _to_int(bytes_done, 0) if ok_bytes_done else 0
@@ -2487,9 +2621,11 @@ def _remove_deluge(url, password, torrent_hash, timeout_seconds, delete_files=Fa
 
 
 def _remove_rtorrent(url, torrent_hash, username, password, timeout_seconds, delete_files=False):
-    _rtorrent_xmlrpc(url, "d.stop", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
-    method = "d.erase" if delete_files else "d.close"
-    ok, error, _result = _rtorrent_xmlrpc(url, method, [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
+    normalized_hash = str(torrent_hash or "").strip().lower()
+    if not normalized_hash:
+        return False, "Torrent hash is required."
+    _rtorrent_xmlrpc(url, "d.stop", [normalized_hash], timeout_seconds=timeout_seconds, username=username, password=password)
+    ok, error, _result = _rtorrent_xmlrpc(url, "d.erase", [normalized_hash], timeout_seconds=timeout_seconds, username=username, password=password)
     if not ok:
         return False, error or "rTorrent returned an error."
     return True, "rTorrent removed torrent."
@@ -2504,6 +2640,62 @@ def _extract_magnet_hash(magnet_url):
     match = re.search(r"xt=urn:btih:([A-Z2-7]+)", magnet_url)
     if match:
         return match.group(1).lower()
+    return None
+
+
+def _extract_rtorrent_hash(value):
+    text = str(value or "").strip()
+    if re.fullmatch(r"[A-Fa-f0-9]{40}", text):
+        return text.lower()
+    return None
+
+
+def _find_recent_rtorrent_hash_by_name(url, expected_name, username, password, timeout_seconds):
+    expected = str(expected_name or "").strip().lower()
+    if not expected:
+        return None
+    expected_terms = [term for term in re.split(r"\s+", expected) if len(term) > 2]
+    if not expected_terms:
+        expected_terms = [expected]
+
+    ok, _error, hashes = _rtorrent_xmlrpc(
+        url,
+        "download_list",
+        [],
+        timeout_seconds=timeout_seconds,
+        username=username,
+        password=password,
+    )
+    if not ok or not isinstance(hashes, list):
+        return None
+
+    best_hash = None
+    best_score = -1
+    for torrent_hash in hashes:
+        normalized_hash = _extract_rtorrent_hash(torrent_hash)
+        if not normalized_hash:
+            continue
+        ok_name, _name_error, name = _rtorrent_xmlrpc(
+            url,
+            "d.name",
+            [normalized_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+        )
+        if not ok_name:
+            continue
+        name_text = str(name or "").strip().lower()
+        if not name_text:
+            continue
+        if expected in name_text:
+            return normalized_hash
+        score = sum(1 for term in expected_terms if term in name_text)
+        if score > best_score:
+            best_score = score
+            best_hash = normalized_hash
+    if best_score > 0:
+        return best_hash
     return None
 
 

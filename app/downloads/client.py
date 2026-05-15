@@ -463,6 +463,16 @@ def _unsupported_remove(client_type, _client_cfg, _item_id, **_kwargs):
     return False, f"{client_type} is listed by Sonarr but is not implemented in AeroFoil yet."
 
 
+def _supports_live_status(adapter):
+    if not adapter:
+        return False
+    return not (
+        adapter.list_active_fn is _unsupported_list
+        and adapter.list_completed_fn is _unsupported_list
+        and adapter.list_history_fn is _unsupported_list
+    )
+
+
 _ADAPTERS = {
     ("torrent", "qbittorrent"): DownloadClientAdapter(
         protocol="torrent",
@@ -810,6 +820,7 @@ def get_supported_download_clients():
             "supports_download_path": bool(adapter.supports_download_path),
             "supports_delete_files": bool(adapter.supports_delete_files),
             "supports_history": bool(adapter.supports_history),
+            "supports_live_status": bool(_supports_live_status(adapter)),
         })
     out.sort(key=lambda item: (item["protocol"], item["type"]))
     return out
@@ -827,6 +838,7 @@ def get_download_client_capabilities(protocol, client_cfg):
         "supports_download_path": bool(adapter.supports_download_path),
         "supports_delete_files": bool(adapter.supports_delete_files),
         "supports_history": bool(adapter.supports_history),
+        "supports_live_status": bool(_supports_live_status(adapter)),
     }
 
 

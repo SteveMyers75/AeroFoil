@@ -24,7 +24,7 @@ from datetime import timedelta, datetime
 flask.cli.show_server_banner = lambda *args: None
 from app.constants import *
 from app.settings import *
-from app.downloads import ProwlarrClient, filter_results, test_download_client, get_supported_download_clients, get_download_client_capabilities, get_download_client_diagnostics, run_downloads_job, manual_search_update, queue_download_url, search_update_options, check_completed_downloads, get_downloads_state, get_active_downloads, get_download_ui_visibility, filter_download_search_results, sort_download_search_results, remove_pending_download
+from app.downloads import ProwlarrClient, filter_results, test_download_client, get_supported_download_clients, get_download_client_capabilities, get_download_client_diagnostics, run_downloads_job, manual_search_update, queue_download_url, search_update_options, check_completed_downloads, get_downloads_state, get_active_downloads, get_download_ui_visibility, filter_download_search_results, sort_download_search_results, remove_pending_download, remove_duplicate_download, dismiss_duplicate_download
 from app.library import organize_library, delete_older_updates, delete_duplicates, delete_library_content, delete_orphaned_addons
 from app.db import *
 from app.shop import *
@@ -4285,6 +4285,47 @@ def test_downloads_client_api():
         password=data.get('password', ''),
         api_key=data.get('api_key', '')
     )
+    detail = None
+    failure_kind = None
+    message_text = str(message or '').strip()
+    message_lower = message_text.lower()
+    missing_fields = diagnostics.get('missing') if isinstance(diagnostics, dict) else []
+    if ok:
+        failure_kind = None
+    elif isinstance(missing_fields, list) and missing_fields:
+        failure_kind = 'missing_credentials'
+        detail = f"Missing required fields: {', '.join(str(field) for field in missing_fields)}."
+    elif (
+        'authentication failed' in message_lower
+        or 'login failed' in message_lower
+        or 'unauthorized' in message_lower
+        or '(401' in message_lower
+        or re.search(r'(^|\s|\()401(\b|\)|\.)', message_lower)
+    ):
+        failure_kind = 'authentication'
+        detail = 'Authentication failed. Verify username/password or API key for this client.'
+    elif (
+        'forbidden' in message_lower
+        or '(403' in message_lower
+        or re.search(r'(^|\s|\()403(\b|\)|\.)', message_lower)
+    ):
+        failure_kind = 'authorization'
+        detail = 'Client denied access. Check account permissions and client security settings.'
+    elif 'timeout' in message_lower or 'timed out' in message_lower:
+        failure_kind = 'timeout'
+        detail = 'Connection timed out. Verify the URL/port, client availability, and network reachability.'
+    elif 'url is required' in message_lower or 'url is invalid' in message_lower:
+        failure_kind = 'invalid_url'
+        detail = 'Client URL is invalid or missing. Include protocol and port (for example http://host:8080).'
+    elif 'connection' in message_lower or 'refused' in message_lower or 'failed to establish a new connection' in message_lower:
+        failure_kind = 'connection'
+        detail = 'Could not connect to the client. Confirm the host, port, and firewall/network settings.'
+    elif 'unsupported' in message_lower:
+        failure_kind = 'unsupported_client'
+        detail = 'Selected client type is not supported for testing.'
+    else:
+        failure_kind = 'unknown'
+        detail = 'Client test failed. Review URL, credentials, and server logs for more detail.'
     download_path = (data.get('download_path') or '').strip()
     warning = None
     supports_download_path = bool(capabilities.get('supports_download_path'))
@@ -4296,6 +4337,8 @@ def test_downloads_client_api():
     return jsonify({
         'success': ok,
         'message': message,
+        'detail': detail,
+        'failure_kind': failure_kind,
         'warning': warning,
         'diagnostics': diagnostics,
     })
@@ -4506,6 +4549,24 @@ def downloads_queue_state():
 def downloads_queue_delete():
     data = request.json or {}
     ok, message = remove_pending_download(data.get('key'))
+    state = get_downloads_state()
+    return jsonify({'success': ok, 'message': message, 'state': state})
+
+
+@app.post('/api/downloads/duplicates/delete')
+@access_required('admin')
+def downloads_duplicates_delete():
+    data = request.json or {}
+    ok, message = remove_duplicate_download(data.get('id'))
+    state = get_downloads_state()
+    return jsonify({'success': ok, 'message': message, 'state': state})
+
+
+@app.post('/api/downloads/duplicates/dismiss')
+@access_required('admin')
+def downloads_duplicates_dismiss():
+    data = request.json or {}
+    ok, message = dismiss_duplicate_download(data.get('id'), fingerprint=data.get('fingerprint'))
     state = get_downloads_state()
     return jsonify({'success': ok, 'message': message, 'state': state})
 

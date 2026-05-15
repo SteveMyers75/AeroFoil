@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 import threading
 import time
+import uuid
 import unicodedata
 import json
 
@@ -177,6 +178,23 @@ def get_download_ui_visibility(downloads):
         "show_torrent_columns": _is_protocol_client_configured(downloads, "torrent"),
         "show_usenet_columns": _is_protocol_client_configured(downloads, "usenet"),
     }
+
+
+def _get_download_capability_warnings(downloads):
+    warnings = []
+    for protocol in ("torrent", "usenet"):
+        if not _is_protocol_client_configured(downloads, protocol):
+            continue
+        client_cfg = _get_protocol_client_cfg(downloads, protocol)
+        capabilities = get_download_client_capabilities(protocol, client_cfg) or {}
+        if capabilities.get("supports_live_status", True):
+            continue
+        client_type = str(capabilities.get("type") or client_cfg.get("type") or "unknown").strip().lower() or "unknown"
+        warnings.append(
+            f"{protocol.capitalize()} client '{client_type}' does not support live status listing in AeroFoil. "
+            "Current Downloads may appear empty and queue completion tracking may be limited."
+        )
+    return warnings
 
 
 def _get_completed_poll_targets(downloads):
@@ -559,8 +577,8 @@ def get_downloads_state():
     _ensure_downloads_state_loaded()
     settings = load_settings()
     downloads = settings.get("downloads", {})
-    _restore_pending_from_active(downloads)
     snapshot = _get_download_activity_snapshot(downloads)
+    _restore_pending_from_active(downloads, snapshot=snapshot)
     with _state_lock:
         pending_items = []
         for key, info in _state["pending"].items():
@@ -571,6 +589,7 @@ def get_downloads_state():
             "pending": pending_items,
             "completed": sorted(_state["completed"]),
             "duplicates": list(_state.get("duplicates") or []),
+            "warnings": _get_download_capability_warnings(downloads),
         }
 
 
@@ -713,6 +732,89 @@ def remove_pending_download(key):
     if not delete_context["live_match"]:
         return _remove_stale_pending_download(key, delete_context)
     return _remove_pending_live_download(key, delete_context)
+
+
+def remove_duplicate_download(duplicate_id):
+    duplicate_id = str(duplicate_id or "").strip()
+    if not duplicate_id:
+        return False, "Missing duplicate key."
+
+    _ensure_downloads_state_loaded()
+    with _state_lock:
+        duplicates = _state.get("duplicates")
+        if not isinstance(duplicates, list):
+            duplicates = []
+            _state["duplicates"] = duplicates
+
+        target_index = -1
+        target_entry = None
+        for index in range(len(duplicates) - 1, -1, -1):
+            entry = duplicates[index]
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("id") or "").strip() == duplicate_id:
+                target_index = index
+                target_entry = dict(entry)
+                break
+
+    if target_index < 0 or not target_entry:
+        return False, "Duplicate entry not found."
+
+    target_path = str(target_entry.get("path") or "").strip()
+    if not target_path:
+        return False, "Duplicate entry has no deletable path."
+
+    delete_ok, delete_message = _delete_download_payload(target_path)
+    if not delete_ok:
+        return False, f"Failed to delete duplicate file: {delete_message or 'cleanup failed'}"
+
+    with _state_lock:
+        duplicates = _state.get("duplicates")
+        if not isinstance(duplicates, list):
+            duplicates = []
+            _state["duplicates"] = duplicates
+        for index in range(len(duplicates) - 1, -1, -1):
+            entry = duplicates[index]
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("id") or "").strip() == duplicate_id:
+                duplicates.pop(index)
+                _persist_downloads_state_locked()
+                break
+    return True, "Deleted rejected duplicate file."
+
+
+def dismiss_duplicate_download(duplicate_id, fingerprint=None):
+    duplicate_id = str(duplicate_id or "").strip()
+    fingerprint = fingerprint if isinstance(fingerprint, dict) else {}
+    if not duplicate_id and not fingerprint:
+        return False, "Missing duplicate key."
+
+    _ensure_downloads_state_loaded()
+    with _state_lock:
+        duplicates = _state.get("duplicates")
+        if not isinstance(duplicates, list):
+            duplicates = []
+            _state["duplicates"] = duplicates
+
+        for index in range(len(duplicates) - 1, -1, -1):
+            entry = duplicates[index]
+            if not isinstance(entry, dict):
+                continue
+            entry_id = str(entry.get("id") or "").strip()
+            id_matches = bool(duplicate_id and entry_id == duplicate_id)
+            fingerprint_matches = (
+                not duplicate_id
+                and str(entry.get("timestamp") or "") == str(fingerprint.get("timestamp") or "")
+                and str(entry.get("label") or "") == str(fingerprint.get("label") or "")
+                and str(entry.get("reason") or "") == str(fingerprint.get("reason") or "")
+                and str(entry.get("protocol") or "") == str(fingerprint.get("protocol") or "")
+            )
+            if id_matches or fingerprint_matches:
+                duplicates.pop(index)
+                _persist_downloads_state_locked()
+                return True, "Removed duplicate entry."
+    return False, "Duplicate entry not found."
 
 
 def _process_downloads(downloads, scan_cb=None, post_cb=None):
@@ -1249,23 +1351,33 @@ def _infer_pending_info_from_queue_item(item):
     return info
 
 
-def _restore_pending_from_active(downloads):
+def _restore_pending_from_active(downloads, snapshot=None):
     _ensure_downloads_state_loaded()
     poll_targets = _get_completed_poll_targets(downloads)
     if not poll_targets:
         return 0
 
     queued_items = []
-    for protocol, client_cfg in poll_targets:
-        try:
-            queued_items.extend(list_active_downloads(protocol, client_cfg))
-        except Exception as exc:
-            logger.warning("Failed to restore pending %s queue state: %s", protocol, exc)
-        if protocol == "usenet":
+    if isinstance(snapshot, dict):
+        active_by_protocol = snapshot.get("active_by_protocol") or {}
+        completed_by_protocol = snapshot.get("completed_by_protocol") or {}
+        for protocol, _client_cfg in poll_targets:
+            active_bucket = active_by_protocol.get(protocol) or {}
+            queued_items.extend(list(active_bucket.get("items") or []))
+            if protocol == "usenet":
+                completed_bucket = completed_by_protocol.get(protocol) or {}
+                queued_items.extend(list(completed_bucket.get("items") or []))
+    else:
+        for protocol, client_cfg in poll_targets:
             try:
-                queued_items.extend(list_history_downloads(protocol, client_cfg))
+                queued_items.extend(list_active_downloads(protocol, client_cfg))
             except Exception as exc:
-                logger.warning("Failed to restore completed %s queue state: %s", protocol, exc)
+                logger.warning("Failed to restore pending %s queue state: %s", protocol, exc)
+            if protocol == "usenet":
+                try:
+                    queued_items.extend(list_history_downloads(protocol, client_cfg))
+                except Exception as exc:
+                    logger.warning("Failed to restore completed %s queue state: %s", protocol, exc)
 
     if not queued_items:
         return 0
@@ -1943,6 +2055,7 @@ def _track_duplicate_locked(info, item, reason, key=None):
         _state["duplicates"] = duplicates
     label = str((item or {}).get("name") or (info or {}).get("expected_name") or _format_pending_label(info)).strip()
     duplicates.append({
+        "id": str(uuid.uuid4()),
         "timestamp": int(time.time()),
         "label": label,
         "reason": str(reason or "duplicate"),

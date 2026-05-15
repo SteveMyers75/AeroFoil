@@ -31,7 +31,9 @@ from app.downloads.manager import (
     get_downloads_state,
     manual_search_update,
     queue_download_url,
+    dismiss_duplicate_download,
     remove_pending_download,
+    remove_duplicate_download,
     search_update_options,
     sort_download_search_results,
 )
@@ -104,6 +106,14 @@ class QueueRoutingTests(unittest.TestCase):
         self.assertEqual(caps["type"], "rtorrent")
         self.assertTrue(caps["supports_categories"])
         self.assertTrue(caps["supports_download_path"])
+        self.assertTrue(caps["supports_live_status"])
+
+    def test_get_download_client_capabilities_marks_pneumatic_without_live_status(self):
+        caps = get_download_client_capabilities("usenet", {"type": "pneumatic"})
+        self.assertIsNotNone(caps)
+        self.assertEqual(caps["protocol"], "usenet")
+        self.assertEqual(caps["type"], "pneumatic")
+        self.assertFalse(caps["supports_live_status"])
 
     def test_get_download_client_diagnostics_reports_missing_required_fields(self):
         diag = get_download_client_diagnostics("", {"type": "rtorrent", "url": ""})
@@ -2421,6 +2431,111 @@ class ManagedCompletionStateTests(unittest.TestCase):
             "delete failed: could not verify downloader state",
         )
         delete_payload_mock.assert_not_called()
+
+    @patch("app.downloads.manager._delete_download_payload", return_value=(True, None))
+    @patch("app.downloads.manager._state_lock")
+    @patch("app.downloads.manager._state", {
+        "running": False,
+        "last_run": 0.0,
+        "pending": {},
+        "completed": set(),
+        "duplicates": [{
+            "id": "dup-1",
+            "label": "Example Release NSW-GRP",
+            "path": "X:\\fixture-root\\downloads\\Example Release",
+            "reason": "duplicate basegame: 0100EXAMPLE000000 already exists in library",
+        }],
+    })
+    def test_remove_duplicate_download_deletes_file_and_removes_entry(
+        self,
+        _state_lock_mock,
+        delete_payload_mock,
+    ):
+        ok, message = remove_duplicate_download("dup-1")
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Deleted rejected duplicate file.")
+        self.assertEqual(downloads_manager._state.get("duplicates"), [])
+        delete_payload_mock.assert_called_once_with("X:\\fixture-root\\downloads\\Example Release")
+
+    @patch("app.downloads.manager._state_lock")
+    @patch("app.downloads.manager._state", {
+        "running": False,
+        "last_run": 0.0,
+        "pending": {},
+        "completed": set(),
+        "duplicates": [{
+            "id": "dup-2",
+            "label": "Example Release NSW-GRP",
+            "path": None,
+            "reason": "duplicate update: 0100EXAMPLE000000 v65536 already known",
+        }],
+    })
+    def test_remove_duplicate_download_rejects_when_path_missing(
+        self,
+        _state_lock_mock,
+    ):
+        ok, message = remove_duplicate_download("dup-2")
+
+        self.assertFalse(ok)
+        self.assertEqual(message, "Duplicate entry has no deletable path.")
+        self.assertEqual(len(downloads_manager._state.get("duplicates") or []), 1)
+
+    @patch("app.downloads.manager._state_lock")
+    @patch("app.downloads.manager._state", {
+        "running": False,
+        "last_run": 0.0,
+        "pending": {},
+        "completed": set(),
+        "duplicates": [{
+            "id": "dup-3",
+            "label": "Example Release NSW-GRP",
+            "path": None,
+            "reason": "duplicate update: 0100EXAMPLE000000 v65536 already known",
+        }],
+    })
+    def test_dismiss_duplicate_download_removes_entry_without_path(
+        self,
+        _state_lock_mock,
+    ):
+        ok, message = dismiss_duplicate_download("dup-3")
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Removed duplicate entry.")
+        self.assertEqual(downloads_manager._state.get("duplicates"), [])
+
+    @patch("app.downloads.manager._state_lock")
+    @patch("app.downloads.manager._state", {
+        "running": False,
+        "last_run": 0.0,
+        "pending": {},
+        "completed": set(),
+        "duplicates": [{
+            "id": None,
+            "timestamp": 1234567890,
+            "label": "Legacy Entry",
+            "reason": "duplicate basegame: already exists",
+            "protocol": "torrent",
+            "path": None,
+        }],
+    })
+    def test_dismiss_duplicate_download_removes_legacy_entry_by_fingerprint(
+        self,
+        _state_lock_mock,
+    ):
+        ok, message = dismiss_duplicate_download(
+            "",
+            fingerprint={
+                "timestamp": 1234567890,
+                "label": "Legacy Entry",
+                "reason": "duplicate basegame: already exists",
+                "protocol": "torrent",
+            },
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Removed duplicate entry.")
+        self.assertEqual(downloads_manager._state.get("duplicates"), [])
 
 
 if __name__ == "__main__":
