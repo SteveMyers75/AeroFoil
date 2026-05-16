@@ -188,6 +188,10 @@
         ).toString();
     }
 
+    function isLatestSaveVersion(item) {
+        return item['is_latest'] === true || item['isLatest'] === true;
+    }
+
     function formatSaveDate(value) {
         const text = (value || '').toString().trim();
         if (!text) return '-';
@@ -298,6 +302,7 @@
             const titleName = getTitleName(item, titleId);
             const note = getSaveNote(item);
             const createdAt = formatSaveDate(getSaveCreatedAt(item));
+            const latestLabel = isLatestSaveVersion(item) ? ' <span class="badge text-bg-success">latest</span>' : '';
             const sizeText = formatBytes(item['size']);
             const downloadUrl = getDownloadUrl(item, titleId);
             const deleteUrl = getDeleteUrl(item, titleId);
@@ -315,7 +320,7 @@
                             </div>
                         </div>
                     </td>
-                    <td class="small text-nowrap">${escapeHtml(createdAt)}</td>
+                    <td class="small text-nowrap">${escapeHtml(createdAt)}${latestLabel}</td>
                     <td class="small text-muted save-note-text text-truncate" title="${escapeHtml(note || '-')}">${escapeHtml(note || '-')}</td>
                     <td class="small">${escapeHtml(sizeText)}</td>
                     <td class="text-end">
@@ -344,6 +349,7 @@
             const titleName = getTitleName(item, titleId);
             const note = getSaveNote(item);
             const createdAt = formatSaveDate(getSaveCreatedAt(item));
+            const latestLabel = isLatestSaveVersion(item) ? ' <span class="badge text-bg-success">latest</span>' : '';
             const sizeText = formatBytes(item['size']);
             const downloadUrl = getDownloadUrl(item, titleId);
             const deleteUrl = getDeleteUrl(item, titleId);
@@ -357,7 +363,7 @@
                         <div class="card-body p-2">
                             <div class="small fw-semibold text-truncate" title="${escapeHtml(titleName)}">${escapeHtml(titleName)}</div>
                             <div class="small text-muted font-monospace text-truncate mb-1" title="${escapeHtml(titleId || '-')}">${escapeHtml(titleId || '-')}</div>
-                            <div class="small text-muted text-truncate" title="${escapeHtml(createdAt)}">${escapeHtml(createdAt)}</div>
+                            <div class="small text-muted text-truncate" title="${escapeHtml(createdAt)}">${escapeHtml(createdAt)}${latestLabel}</div>
                             <div class="small text-muted text-truncate" title="${escapeHtml(note || '-')}">${escapeHtml(note || '-')}</div>
                             <div class="small text-muted">${escapeHtml(sizeText)}</div>
                         </div>

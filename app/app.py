@@ -1518,6 +1518,10 @@ def _save_sync_latest_dir(user, title_id):
     return os.path.join(_save_sync_title_dir(user, title_id), 'latest')
 
 
+def _save_sync_latest_archive_path(user, title_id):
+    return os.path.join(_save_sync_title_dir(user, title_id), '_latest.zip')
+
+
 def _save_sync_archive_path(user, title_id, save_id=None):
     if save_id:
         return os.path.join(_save_sync_title_dir(user, title_id), f'{save_id}.zip')
@@ -1644,6 +1648,35 @@ def _save_sync_refresh_latest_from_archive(user, title_id, archive_path):
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def _save_sync_build_archive_from_directory(source_dir, archive_path):
+    if not os.path.isdir(source_dir):
+        raise ValueError('Latest save directory does not exist.')
+
+    temp_archive = archive_path + '.tmp'
+    if os.path.exists(temp_archive):
+        os.remove(temp_archive)
+
+    try:
+        with zipfile.ZipFile(temp_archive, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+            has_files = False
+            for root, _dirs, files in os.walk(source_dir):
+                for filename in files:
+                    abs_path = os.path.join(root, filename)
+                    rel_path = os.path.relpath(abs_path, source_dir)
+                    archive.write(abs_path, arcname=rel_path)
+                    has_files = True
+            if not has_files:
+                raise ValueError('Latest save directory is empty.')
+        os.replace(temp_archive, archive_path)
+    except Exception:
+        try:
+            if os.path.exists(temp_archive):
+                os.remove(temp_archive)
+        except Exception:
+            pass
+        raise
+
+
 def _save_sync_refresh_latest_for_title(user, title_id):
     versions = _save_sync_collect_versions_for_title(user, title_id)
     latest_archive = None
@@ -1653,8 +1686,14 @@ def _save_sync_refresh_latest_for_title(user, title_id):
             latest_archive = archive_path
             break
     latest_dir = _save_sync_latest_dir(user, title_id)
+    latest_archive_path = _save_sync_latest_archive_path(user, title_id)
     if not latest_archive:
         _save_sync_clear_directory(latest_dir)
+        try:
+            if os.path.isfile(latest_archive_path):
+                os.remove(latest_archive_path)
+        except Exception:
+            pass
         return
     _save_sync_refresh_latest_from_archive(user, title_id, latest_archive)
 
@@ -1666,6 +1705,8 @@ def _save_sync_collect_versions_for_title(user, title_id):
         try:
             for filename in sorted(os.listdir(title_dir)):
                 if not filename.lower().endswith('.zip'):
+                    continue
+                if filename == '_latest.zip':
                     continue
                 save_id = _normalize_save_id(filename[:-4])
                 if not save_id:
@@ -1763,6 +1804,45 @@ def _save_sync_collect_versions(user):
 
 
 def _save_sync_resolve_download_archive(user, title_id, save_id=None):
+    latest_archive_path = _save_sync_latest_archive_path(user, title_id)
+    wants_generated_latest = (save_id is None) or (str(save_id).strip().lower() == 'latest')
+    if wants_generated_latest and _is_cyberfoil_request():
+        latest_dir = _save_sync_latest_dir(user, title_id)
+        if os.path.isdir(latest_dir):
+            try:
+                _save_sync_build_archive_from_directory(latest_dir, latest_archive_path)
+            except Exception as e:
+                logger.warning(
+                    'Failed generating latest save archive for user %s title %s from latest directory: %s',
+                    getattr(user, 'user', '?'),
+                    title_id,
+                    e,
+                )
+    if wants_generated_latest and _is_cyberfoil_request() and os.path.isfile(latest_archive_path):
+        latest_size = 0
+        latest_created_ts = int(time.time())
+        try:
+            latest_size = int(os.path.getsize(latest_archive_path))
+        except Exception:
+            latest_size = 0
+        try:
+            latest_created_ts = int(os.path.getmtime(latest_archive_path))
+        except Exception:
+            latest_created_ts = int(time.time())
+        return {
+            'title_id': title_id,
+            'save_id': 'latest',
+            'size': latest_size,
+            'note': 'latest',
+            'created_ts': latest_created_ts,
+            'created_at': _save_sync_format_created_at(latest_created_ts),
+            'download_url': f'/api/saves/download/{title_id}.zip',
+            'delete_url': '',
+            'archive_path': latest_archive_path,
+            'legacy': False,
+            'generated_latest': True,
+        }, None
+
     versions = _save_sync_collect_versions_for_title(user, title_id)
     if not versions:
         return None, 'Save archive not found.'
@@ -5163,7 +5243,18 @@ def list_saves_api():
         logger.warning('Unable to load TitleDB for save metadata: %s', e)
 
     try:
+        is_cyberfoil = _is_cyberfoil_request()
         save_versions = _save_sync_collect_versions(user)
+        latest_by_title = {}
+        for version in save_versions:
+            title_id = str(version.get('title_id') or '').strip().upper()
+            if not title_id:
+                continue
+            created_ts = int(version.get('created_ts') or 0)
+            save_id = str(version.get('save_id') or '')
+            current = latest_by_title.get(title_id)
+            if current is None or created_ts > current.get('created_ts', 0):
+                latest_by_title[title_id] = {'created_ts': created_ts, 'save_id': save_id}
         title_metadata = {}
         for version in save_versions:
             title_id = str(version.get('title_id') or '').strip().upper()
@@ -5194,6 +5285,13 @@ def list_saves_api():
             download_url = str(version.get('download_url') or '')
             delete_url = str(version.get('delete_url') or '')
             icon_url = f'/api/shop/icon/{title_id}'
+            latest_info = latest_by_title.get(title_id) or {}
+            is_latest = (
+                int(latest_info.get('created_ts') or 0) == created_ts
+                and str(latest_info.get('save_id') or '') == save_id
+            )
+            latest_note = ' [latest]' if (is_cyberfoil and is_latest) else ''
+            note_with_latest = f'{note}{latest_note}'.strip()
             saves.append({
                 'title_id': title_id,
                 'titleId': title_id,
@@ -5204,13 +5302,17 @@ def list_saves_api():
                 'size': size,
                 'save_id': save_id,
                 'saveId': save_id,
-                'note': note,
-                'save_note': note,
-                'saveNote': note,
+                'note': note_with_latest if is_cyberfoil else note,
+                'save_note': note_with_latest if is_cyberfoil else note,
+                'saveNote': note_with_latest if is_cyberfoil else note,
                 'created_at': created_at,
                 'createdAt': created_at,
                 'created_ts': created_ts,
                 'createdTs': created_ts,
+                'is_latest': is_latest,
+                'isLatest': is_latest,
+                'latest_available_save_id': str(latest_info.get('save_id') or ''),
+                'latestAvailableSaveId': str(latest_info.get('save_id') or ''),
                 'icon_url': icon_url,
                 'iconUrl': icon_url,
                 'icon_remote_url': cached_meta['icon_remote_url'],
