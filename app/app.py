@@ -5262,6 +5262,33 @@ def list_saves_api():
     try:
         is_cyberfoil = _is_cyberfoil_request()
         save_versions = _save_sync_collect_versions(user)
+        seen_titles = {
+            str(item.get('title_id') or '').strip().upper()
+            for item in save_versions
+            if str(item.get('title_id') or '').strip()
+        }
+        for title_id in sorted(seen_titles):
+            latest_dir = _save_sync_latest_dir(user, title_id)
+            if not os.path.isdir(latest_dir):
+                continue
+            latest_created_ts = int(time.time())
+            try:
+                latest_created_ts = int(os.path.getmtime(latest_dir))
+            except Exception:
+                latest_created_ts = int(time.time())
+            save_versions.append({
+                'title_id': title_id,
+                'save_id': 'latest',
+                'size': 0,
+                'note': 'latest directory',
+                'created_ts': latest_created_ts,
+                'created_at': _save_sync_format_created_at(latest_created_ts),
+                'download_url': f'/api/saves/download/{title_id}/latest.zip',
+                'delete_url': '',
+                'archive_path': '',
+                'legacy': False,
+                'latest_directory': True,
+            })
         latest_by_title = {}
         for version in save_versions:
             title_id = str(version.get('title_id') or '').strip().upper()
@@ -5326,6 +5353,8 @@ def list_saves_api():
                 'createdAt': created_at,
                 'created_ts': created_ts,
                 'createdTs': created_ts,
+                'latest_directory': bool(version.get('latest_directory')),
+                'latestDirectory': bool(version.get('latest_directory')),
                 'is_latest': is_latest,
                 'isLatest': is_latest,
                 'latest_available_save_id': str(latest_info.get('save_id') or ''),

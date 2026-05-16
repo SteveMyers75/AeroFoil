@@ -147,6 +147,9 @@
     }
 
     function getDeleteUrl(item, titleId) {
+        if (item['latest_directory'] === true || item['latestDirectory'] === true) {
+            return '';
+        }
         let deleteUrl = (item['delete_url'] || item['deleteUrl'] || '').toString();
         const saveId = (item['save_id'] || item['saveId'] || '').toString();
         if (!deleteUrl && titleId) {
@@ -172,6 +175,9 @@
     }
 
     function getSaveNote(item) {
+        if (item['latest_directory'] === true || item['latestDirectory'] === true) {
+            return 'latest directory';
+        }
         return (
             item['note']
             || item['save_note']
