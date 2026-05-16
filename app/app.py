@@ -1652,6 +1652,7 @@ def _save_sync_build_archive_from_directory(source_dir, archive_path):
     if not os.path.isdir(source_dir):
         raise ValueError('Latest save directory does not exist.')
 
+    started_at = time.time()
     temp_archive = archive_path + '.tmp'
     if os.path.exists(temp_archive):
         os.remove(temp_archive)
@@ -1659,15 +1660,31 @@ def _save_sync_build_archive_from_directory(source_dir, archive_path):
     try:
         with zipfile.ZipFile(temp_archive, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
             has_files = False
+            file_count = 0
             for root, _dirs, files in os.walk(source_dir):
                 for filename in files:
                     abs_path = os.path.join(root, filename)
                     rel_path = os.path.relpath(abs_path, source_dir)
                     archive.write(abs_path, arcname=rel_path)
                     has_files = True
+                    file_count += 1
             if not has_files:
                 raise ValueError('Latest save directory is empty.')
         os.replace(temp_archive, archive_path)
+        elapsed_ms = int((time.time() - started_at) * 1000)
+        archive_size = 0
+        try:
+            archive_size = int(os.path.getsize(archive_path))
+        except Exception:
+            archive_size = 0
+        logger.info(
+            'Save latest archive generated source=%s archive=%s files=%s bytes=%s elapsed_ms=%s',
+            source_dir,
+            archive_path,
+            file_count,
+            archive_size,
+            elapsed_ms,
+        )
     except Exception:
         try:
             if os.path.exists(temp_archive):
@@ -5439,25 +5456,76 @@ def download_save_api(title_id, save_id=None):
     if user is None:
         return api_error('Save sync authorization failed.', 403)
 
+    requested_save_id = str(save_id or '').strip()
+    client_kind = 'cyberfoil' if _is_cyberfoil_request() else 'other'
+
     normalized_title_id = _normalize_save_title_id(title_id)
     if not normalized_title_id:
+        logger.warning(
+            'Save download rejected for user %s: invalid title_id=%s save_id=%s client=%s',
+            getattr(user, 'user', '?'),
+            title_id,
+            requested_save_id or '-',
+            client_kind,
+        )
         return api_error('Invalid title_id for save download.', 400)
+
+    logger.info(
+        'Save download request user=%s title=%s save_id=%s client=%s',
+        getattr(user, 'user', '?'),
+        normalized_title_id,
+        requested_save_id or 'latest',
+        client_kind,
+    )
 
     selected_archive, resolve_error = _save_sync_resolve_download_archive(user, normalized_title_id, save_id=save_id)
     if selected_archive is None:
+        logger.warning(
+            'Save download resolve failed user=%s title=%s save_id=%s client=%s error=%s',
+            getattr(user, 'user', '?'),
+            normalized_title_id,
+            requested_save_id or 'latest',
+            client_kind,
+            resolve_error or 'not found',
+        )
         if resolve_error and str(resolve_error).lower().startswith('invalid'):
             return api_error(resolve_error, 400)
         return api_error(resolve_error or 'Save archive not found.', 404)
 
     archive_path = str(selected_archive.get('archive_path') or '')
     if not os.path.isfile(archive_path):
+        logger.warning(
+            'Save download archive missing user=%s title=%s save_id=%s path=%s client=%s',
+            getattr(user, 'user', '?'),
+            normalized_title_id,
+            requested_save_id or 'latest',
+            archive_path or '-',
+            client_kind,
+        )
         return api_error('Save archive not found.', 404)
 
     selected_save_id = str(selected_archive.get('save_id') or '').strip()
+    generated_latest = bool(selected_archive.get('generated_latest'))
+    archive_size = 0
+    try:
+        archive_size = int(os.path.getsize(archive_path))
+    except Exception:
+        archive_size = 0
     if selected_save_id and selected_save_id != 'legacy':
         download_name = f'{normalized_title_id}_{selected_save_id}.zip'
     else:
         download_name = f'{normalized_title_id}.zip'
+
+    logger.info(
+        'Save download serving user=%s title=%s resolved_save_id=%s bytes=%s generated_latest=%s client=%s path=%s',
+        getattr(user, 'user', '?'),
+        normalized_title_id,
+        selected_save_id or 'latest',
+        archive_size,
+        generated_latest,
+        client_kind,
+        archive_path,
+    )
 
     return send_from_directory(
         os.path.dirname(archive_path),
