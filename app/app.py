@@ -524,6 +524,96 @@ def _has_title_request_users_table():
     return bool(_title_request_users_table_exists_cache)
 
 
+def _resolve_motd_username():
+    try:
+        if current_user.is_authenticated:
+            return str(getattr(current_user, 'user', '') or '').strip()
+    except Exception:
+        pass
+    try:
+        auth = request.authorization
+        if auth and auth.username:
+            return str(auth.username).strip()
+    except Exception:
+        pass
+    return ''
+
+
+def _render_motd_template(raw_motd):
+    text = str(raw_motd or '')
+    if not text:
+        return ''
+    now_ts = time.time()
+    now_struct = time.localtime(now_ts)
+    username = _resolve_motd_username()
+    user_id = ''
+    is_admin = 'false'
+    shop_access = 'false'
+    backup_access = 'false'
+    frozen = 'false'
+    client_uid = ''
+    try:
+        if current_user.is_authenticated:
+            user_id = str(getattr(current_user, 'id', '') or '')
+            is_admin = 'true' if bool(getattr(current_user, 'is_admin', False)) else 'false'
+            shop_access = 'true' if bool(getattr(current_user, 'shop_access', False)) else 'false'
+            backup_access = 'true' if bool(getattr(current_user, 'backup_access', False)) else 'false'
+            frozen = 'true' if bool(getattr(current_user, 'frozen', False)) else 'false'
+            client_uid = str(getattr(current_user, 'client_uid', '') or '').strip()
+    except Exception:
+        pass
+    values = {
+        'username': username,
+        'user_id': user_id,
+        'is_admin': is_admin,
+        'shop_access': shop_access,
+        'backup_access': backup_access,
+        'frozen': frozen,
+        'client_uid': client_uid,
+        'remote_addr': str(request.remote_addr or ''),
+        'user_agent': str(request.user_agent.string or ''),
+        'host': str(request.host or ''),
+        'path': str(request.path or ''),
+        'date': time.strftime('%Y-%m-%d', now_struct),
+        'time': time.strftime('%H:%M:%S', now_struct),
+        'datetime': time.strftime('%Y-%m-%d %H:%M:%S', now_struct),
+        'timestamp': str(int(now_ts)),
+    }
+    values.update(_resolve_motd_api_variables())
+    return re.sub(r"\{([a-z_][a-z0-9_]*)\}", lambda m: str(values.get(m.group(1), m.group(0))), text)
+
+
+def _resolve_motd_api_variables():
+    shop_settings = app_settings.get('shop', {}) if isinstance(app_settings, dict) else {}
+    custom_url = str((shop_settings or {}).get('motd_api_url') or '').strip()
+    out = {'api_text': ''}
+    if not custom_url:
+        return out
+    try:
+        resp = requests.get(custom_url, timeout=3, headers={'User-Agent': 'AeroFoil-MOTD/1.0'})
+        if resp.status_code >= 400:
+            logger.warning('MOTD API returned HTTP %s for %s; API MOTD variables will be empty.', resp.status_code, custom_url)
+            return out
+        content_type = str(resp.headers.get('Content-Type') or '').lower()
+        text_body = str(resp.text or '').strip()[:4096]
+        out['api_text'] = text_body
+        if 'application/json' in content_type:
+            try:
+                payload = resp.json()
+                if isinstance(payload, dict):
+                    for key, value in payload.items():
+                        key_norm = re.sub(r'[^a-z0-9_]+', '_', str(key or '').strip().lower()).strip('_')
+                        if not key_norm:
+                            continue
+                        out[f'api_{key_norm}'] = str(value if value is not None else '')
+            except Exception:
+                pass
+        return out
+    except Exception as exc:
+        logger.warning('MOTD API request failed for %s: %s; API MOTD variables will be empty.', custom_url, exc)
+        return out
+
+
 def _prune_upload_jobs_unlocked(now_ts=None):
     now = float(now_ts if now_ts is not None else time.time())
     stale_cutoff = now - 3600.0
@@ -3285,8 +3375,14 @@ def index():
     @tinfoil_access
     def access_tinfoil_shop():
         start_ts = time.time()
+        motd_text = ''
+        try:
+            if bool(app_settings.get('shop', {}).get('motd_enabled', True)):
+                motd_text = _render_motd_template(app_settings['shop']['motd'])
+        except Exception:
+            motd_text = ''
         shop = {
-            "success": app_settings['shop']['motd']
+            "success": motd_text
         }
         shop["files"] = _get_cached_shop_files()
 

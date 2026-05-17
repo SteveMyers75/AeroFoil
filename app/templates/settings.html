@@ -824,10 +824,26 @@
                         </div>
 
                         <div class="mb-3">
+                            <div class="form-check form-switch mb-2">
+                                <input type="checkbox" class="form-check-input" id="motdEnabledCheck">
+                                <label class="form-check-label" for="motdEnabledCheck">Enable MOTD</label>
+                            </div>
                             <label for="motdTextArea" class="form-label">Message of the day:</label>
                             <textarea class="form-control" id="motdTextArea" rows="3"></textarea>
-                            <div id="motdTextAreaHelp" class="form-text">Message presented when opening Tinfoil after
-                                successfully loading your shop.</div>
+                            <div id="motdTextAreaHelp" class="form-text">
+                                Message presented when opening Tinfoil after successfully loading your shop.
+                                Supported variables:
+                                <code>{username}</code>, <code>{user_id}</code>, <code>{is_admin}</code>, <code>{shop_access}</code>, <code>{backup_access}</code>, <code>{frozen}</code>, <code>{client_uid}</code>, <code>{remote_addr}</code>, <code>{user_agent}</code>, <code>{host}</code>, <code>{path}</code>, <code>{date}</code>, <code>{time}</code>, <code>{datetime}</code>, <code>{timestamp}</code>.
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="motdApiUrlInput" class="form-label">Custom MOTD API URL (optional):</label>
+                            <input type="text" class="form-control" id="motdApiUrlInput" placeholder="https://example.com/motd.txt">
+                            <div class="form-text">
+                                When set, AeroFoil fetches this URL and exposes response variables for MOTD templates:
+                                <code>{api_text}</code> for plain text; for JSON object responses it also exposes
+                                <code>{api_&lt;key&gt;}</code> (for example JSON <code>{"reason":"..."}</code> gives <code>{api_reason}</code>, and <code>{"status":"Online"}</code> gives <code>{api_status}</code>).
+                            </div>
                         </div>
 
                         <div>
@@ -1860,7 +1876,9 @@
             auth_blocked_country_codes: (blockedCountryCodesState || []).slice(),
             auth_allowed_country_codes: (allowedCountryCodesState || []).slice(),
             public_key: getInputVal("shopPublicKeyInput"),
+            motd_enabled: getCheckboxStatus("motdEnabledCheck"),
             motd: $('#motdTextArea').val(),
+            motd_api_url: getInputVal("motdApiUrlInput"),
         }
 
         $.ajax({
@@ -2958,7 +2976,9 @@
             shopSettings = result['shop'];
             setInputVal("shopHostInput", shopSettings['host']);
             setInputVal("shopHauthInput", shopSettings['hauth_value'] || '');
+            $("#motdEnabledCheck").prop("checked", shopSettings['motd_enabled'] !== false);
             setInputVal("motdTextArea", shopSettings['motd']);
+            setInputVal("motdApiUrlInput", shopSettings['motd_api_url'] || '');
             $("#publicShopCheck").prop("checked", shopSettings['public']);
             $("#externalTinfoilOnlyCheck").prop("checked", !!shopSettings['external_tinfoil_only']);
             $("#encryptShopCheck").prop("checked", shopSettings['encrypt']);

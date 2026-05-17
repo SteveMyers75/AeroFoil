@@ -147,7 +147,9 @@ DEFAULT_SETTINGS = {
         }
     },
     "shop": {
+        "motd_enabled": True,
         "motd": "Welcome to your own shop!",
+        "motd_api_url": "",
         "public": False,
         "external_tinfoil_only": False,
         "encrypt": True,

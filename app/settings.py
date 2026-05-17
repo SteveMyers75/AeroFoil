@@ -1,6 +1,7 @@
 from app.constants import *
 import yaml
 import os
+from urllib.parse import urlparse
 import time
 import hashlib
 import threading
@@ -513,7 +514,12 @@ def _normalize_shop_settings(raw_shop):
     if isinstance(raw_shop, dict):
         merged.update(raw_shop)
 
+    merged['motd_enabled'] = _coerce_bool(
+        merged.get('motd_enabled'),
+        default=defaults.get('motd_enabled', True),
+    )
     merged['motd'] = str(merged.get('motd') or defaults.get('motd') or '').strip()
+    merged['motd_api_url'] = str(merged.get('motd_api_url') or defaults.get('motd_api_url') or '').strip()
     merged['public'] = _coerce_bool(
         merged.get('public'),
         default=defaults.get('public', False),
@@ -556,6 +562,24 @@ def _validate_shop_public_key(public_key_pem):
         return False, f'Invalid public key: {exc}'
     if getattr(key, 'has_private', lambda: False)():
         return False, 'Invalid public key: expected a public key, not a private key.'
+    return True, None
+
+
+def _validate_shop_motd_api_url(value):
+    raw = str(value or '').strip()
+    if not raw:
+        return True, None
+    if len(raw) > 2048:
+        return False, 'MOTD API URL is too long.'
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return False, 'Invalid MOTD API URL.'
+    scheme = str(parsed.scheme or '').lower()
+    if scheme not in ('http', 'https'):
+        return False, 'MOTD API URL must use http or https.'
+    if not parsed.netloc:
+        return False, 'MOTD API URL must include a host.'
     return True, None
 
 def load_keys(key_file=KEYS_FILE):
@@ -795,6 +819,13 @@ def verify_settings(section, data):
             errors.append({
                 'path': 'shop/public_key',
                 'error': public_key_error,
+            })
+        motd_api_ok, motd_api_error = _validate_shop_motd_api_url(normalized.get('motd_api_url'))
+        if not motd_api_ok:
+            success = False
+            errors.append({
+                'path': 'shop/motd_api_url',
+                'error': motd_api_error,
             })
     return success, errors
 

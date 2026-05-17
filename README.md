@@ -64,6 +64,7 @@ services:
       - ./config:/app/config
       - ./data:/app/data
       - ./conversion-tmp:/app/conversion-tmp
+      - /your/downloads/directory:/downloads
     ports:
       - "8465:8465"
 ```
@@ -137,15 +138,22 @@ AeroFoil supports per-user save backup management when the user has the **Backup
 - Save archives are stored per user under `data/saves/<username>/`.
 - Multiple backup versions per title are supported.
 - Each uploaded version can include a note.
-- Backups can be downloaded or deleted from:
-  - CyberFoil `Saves` section (upload/download/delete),
-  - AeroFoil web page `Saves Files` (download/delete).
+- Backups can be uploaded, downloaded, or deleted from:
+  - CyberFoil `Saves` section,
+  - AeroFoil web page `Save Data Backups` (title picker + upload, download, delete).
 
 Save sync API endpoints:
 - `GET /api/saves/list`
 - `POST /api/saves/upload/<title_id>`
 - `GET /api/saves/download/<title_id>/<save_id>.zip`
 - `DELETE /api/saves/delete/<title_id>/<save_id>` (also accepts `POST` for compatibility)
+
+## Requests
+AeroFoil supports title request tracking across users:
+- A game request entry is shared by title, and multiple users can be linked to that request.
+- Users can view their own requests and current request state in the Web UI.
+- Admins can review all requests, run download search from request entries, deny requests, and delete requests.
+- Open requests are automatically closed when the title becomes available in the library.
 
 # Usage
 Once AeroFoil is running you can access the Shop Web UI by navigating to the `http://<computer/server IP>:8465`.
@@ -237,6 +245,12 @@ This is where you can also upload your `console keys` file to enable content ide
 
 ## Shop customization
 In the `Settings` page under the `Shop` section is where you customize your Shop, like the message displayed when successfully accessing the shop from Tinfoil or if the shop is private or public.
+MOTD supports variables and optional API-backed variables:
+- Built-in variables: `{username}`, `{user_id}`, `{is_admin}`, `{shop_access}`, `{backup_access}`, `{frozen}`, `{client_uid}`, `{remote_addr}`, `{user_agent}`, `{host}`, `{path}`, `{date}`, `{time}`, `{datetime}`, `{timestamp}`.
+- Optional custom MOTD API URL:
+  - Plain text response is exposed as `{api_text}`.
+  - JSON object responses expose `{api_<key>}` for each key (for example `{"reason":"..."}` gives `{api_reason}`).
+- `Enable MOTD` can disable MOTD output entirely while keeping other shop behavior unchanged.
 The `Encrypt shop` option only affects the Tinfoil payload; the web interface and admin UI remain accessible as normal.
 Encryption uses the Tinfoil public key and AES, and requires the `pycryptodome` dependency.
 `Fast transfer mode` prioritizes throughput for `/api/get_game` by skipping per-chunk transfer accounting; Activity live byte counters and exact transfer bytes may be less precise.
