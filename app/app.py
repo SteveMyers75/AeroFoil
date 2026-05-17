@@ -1836,7 +1836,7 @@ def _save_sync_collect_versions(user):
 def _save_sync_resolve_download_archive(user, title_id, save_id=None):
     latest_archive_path = _save_sync_latest_archive_path(user, title_id)
     wants_generated_latest = (save_id is None) or (str(save_id).strip().lower() == 'latest')
-    if wants_generated_latest and _is_cyberfoil_request():
+    if wants_generated_latest:
         latest_dir = _save_sync_latest_dir(user, title_id)
         if os.path.isdir(latest_dir):
             try:
@@ -1848,7 +1848,7 @@ def _save_sync_resolve_download_archive(user, title_id, save_id=None):
                     title_id,
                     e,
                 )
-    if wants_generated_latest and _is_cyberfoil_request() and os.path.isfile(latest_archive_path):
+    if wants_generated_latest and os.path.isfile(latest_archive_path):
         latest_size = 0
         latest_created_ts = int(time.time())
         try:
