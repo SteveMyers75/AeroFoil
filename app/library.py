@@ -1223,6 +1223,14 @@ def _parse_command_args(command):
             args = shlex.split(text, posix=(os.name != 'nt'))
         except ValueError as e:
             raise ValueError(f'Invalid conversion command syntax: {e}') from e
+    if os.name == 'nt':
+        normalized = []
+        for arg in args:
+            if len(arg) >= 2 and arg.startswith('"') and arg.endswith('"'):
+                normalized.append(arg[1:-1])
+            else:
+                normalized.append(arg)
+        args = normalized
     if not args:
         raise ValueError('Conversion command is empty.')
     return args
@@ -1341,6 +1349,8 @@ def _summarize_conversion_failure(log_text, output_file=None):
 
     if 'verification detected hash mismatch' in lowered or '[bad verify]' in lowered:
         summary = 'Verification failed (hash mismatch). Source file is likely bad or corrupted.'
+    elif 'unboundlocalerror' in lowered and 'errormsg' in lowered:
+        summary = 'Conversion failed due to an NSZ converter internal error (UnboundLocalError: errorMsg). Update/reinstall the nsz package and retry.'
     elif 'permissionerror' in lowered and 'winerror 32' in lowered:
         summary = 'Conversion failed and cleanup could not remove failed output (WinError 32: file in use).'
     else:
@@ -1439,6 +1449,36 @@ def _sync_apps_owned_flags(app_ids=None, title_ids=None):
         query = query.filter(Apps.title_id.in_(scoped_title_ids))
     return int(query.update({Apps.owned: has_files_expr}, synchronize_session=False) or 0)
 
+def _path_lookup_variants(path_value):
+    raw = str(path_value or '').strip()
+    if not raw:
+        return []
+    candidates = [
+        raw,
+        raw.replace('\\', '/'),
+        raw.replace('/', '\\'),
+        os.path.normpath(raw),
+    ]
+    deduped = []
+    seen = set()
+    for candidate in candidates:
+        normalized_candidate = os.path.normpath(candidate)
+        for value in (candidate, normalized_candidate):
+            if value and value not in seen:
+                seen.add(value)
+                deduped.append(value)
+    return deduped
+
+def _paths_equivalent(left, right):
+    left_text = str(left or '').strip()
+    right_text = str(right or '').strip()
+    if not left_text or not right_text:
+        return False
+    def _canonicalize(value):
+        unified = re.sub(r'/+', '/', str(value).replace('\\', '/'))
+        return os.path.normcase(os.path.normpath(unified))
+    return _canonicalize(left_text) == _canonicalize(right_text)
+
 def _replace_or_create_converted_file_row(
     source_file_id,
     source_path,
@@ -1454,6 +1494,7 @@ def _replace_or_create_converted_file_row(
 ):
     library_path = get_library_path(source_library_id)
     folder = _compute_relative_folder(library_path, output_file)
+    source_row = Files.query.filter(Files.id == source_file_id).first() if source_file_id is not None else None
     row_data = {
         'library_id': source_library_id,
         'filepath': output_file,
@@ -1463,6 +1504,33 @@ def _replace_or_create_converted_file_row(
         'compressed': True,
         'size': os.path.getsize(output_file),
     }
+
+    output_matches = []
+    output_variants = _path_lookup_variants(output_file)
+    if output_variants:
+        output_matches = Files.query.filter(Files.filepath.in_(output_variants)).all()
+    conflict_row = None
+    for row in output_matches:
+        if _paths_equivalent(row.filepath, output_file):
+            if conflict_row is None or str(row.filepath or '') == str(output_file or ''):
+                conflict_row = row
+    if conflict_row and conflict_row.id != source_file_id:
+        for key, value in row_data.items():
+            setattr(conflict_row, key, value)
+        for app in source_apps:
+            if conflict_row not in app.files:
+                app.files.append(conflict_row)
+            app.owned = True
+        if source_row and source_row.id != conflict_row.id:
+            db.session.execute(
+                app_files.delete().where(app_files.c.file_id == source_row.id)
+            )
+            (
+                db.session.query(Files)
+                .filter(Files.id == source_row.id)
+                .delete(synchronize_session=False)
+            )
+        return
 
     updated = (
         db.session.query(Files)

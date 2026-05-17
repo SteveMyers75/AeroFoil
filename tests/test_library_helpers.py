@@ -31,9 +31,13 @@ try:
         _finalize_staged_conversion_output,
         _format_nsz_command,
         _iter_library_files,
+        _parse_command_args,
+        _path_lookup_variants,
+        _paths_equivalent,
         _pending_cleanup_roots,
         _pending_organize_paths,
         _sanitize_component,
+        _summarize_conversion_failure,
         delete_duplicates,
         delete_older_updates,
         delete_library_content,
@@ -198,6 +202,19 @@ class LibraryHelperTests(unittest.TestCase):
         self.assertEqual(_sanitize_component('Game: Name?'), 'Game Name')
         self.assertEqual(_sanitize_component(''), 'Unknown')
 
+    def test_path_lookup_variants_include_separator_forms(self):
+        variants = _path_lookup_variants('/games\\Example Title\\Base\\Example.nsz')
+        self.assertIn('/games\\Example Title\\Base\\Example.nsz', variants)
+        self.assertIn('/games/Example Title/Base/Example.nsz', variants)
+
+    def test_paths_equivalent_matches_slash_variants(self):
+        self.assertTrue(
+            _paths_equivalent(
+                '/games\\Example Title [0100AAAABBBB0000]\\Updates\\v1\\Example Update [0100AAAABBBB0800].nsz',
+                '/games/Example Title [0100AAAABBBB0000]/Updates/v1/Example Update [0100AAAABBBB0800].nsz',
+            )
+        )
+
     def test_format_nsz_command_threads(self):
         command = _format_nsz_command(
             '{nsz_runner} -C -o "{output_dir}" "{input_file}"',
@@ -207,6 +224,33 @@ class LibraryHelperTests(unittest.TestCase):
         )
         self.assertIn('-t 4', command)
         self.assertIn('input.nsp', command)
+
+    @patch("app.library.os.name", "nt")
+    def test_parse_command_args_strips_wrapping_quotes_on_windows(self):
+        command = (
+            '"C:\\Program Files\\Python\\python.exe" -c "import nsz; nsz.main()" '
+            '--keys "C:\\keys\\prod.keys" -C -o "C:\\out dir" "C:\\in\\Example.nsp"'
+        )
+        args = _parse_command_args(command)
+        self.assertEqual(args[0], "C:\\Program Files\\Python\\python.exe")
+        self.assertEqual(args[2], "import nsz; nsz.main()")
+        self.assertEqual(args[4], "C:\\keys\\prod.keys")
+
+    def test_summarize_conversion_failure_handles_nsz_internal_errormsg_bug(self):
+        log_text = (
+            "UnboundLocalError: cannot access local variable 'errorMsg' "
+            "where it is not associated with a value"
+        )
+        summary = _summarize_conversion_failure(log_text)
+        self.assertIn('NSZ converter internal error', summary)
+
+    def test_summarize_conversion_failure_appends_output_warning_when_present(self):
+        tmp_root = self._make_test_temp_root('conversion_summary_output_exists')
+        output_path = os.path.join(tmp_root, 'Example Release NSW-GRP.nsz')
+        with open(output_path, 'wb') as handle:
+            handle.write(b'bad-output')
+        summary = _summarize_conversion_failure('UnboundLocalError: errorMsg', output_file=output_path)
+        self.assertIn('Output file exists but is unverified and may be invalid', summary)
 
     def test_build_staging_output_path_disabled_returns_final_output(self):
         source = '/library/Game.nsp'
