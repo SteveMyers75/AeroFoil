@@ -12,6 +12,7 @@ from werkzeug.utils import secure_filename
 from werkzeug.security import check_password_hash
 from werkzeug.exceptions import RequestEntityTooLarge
 from sqlalchemy import func, and_, or_, case, literal
+from sqlalchemy import inspect
 from app.scheduler import init_scheduler
 from functools import wraps
 from app.file_watcher import Watcher
@@ -509,6 +510,18 @@ request_settings_sync_lock = threading.Lock()
 request_settings_last_sync_ts = 0.0
 missing_files_sweep_lock = threading.Lock()
 missing_files_last_run_ts = 0.0
+_title_request_users_table_exists_cache = None
+
+
+def _has_title_request_users_table():
+    global _title_request_users_table_exists_cache
+    if _title_request_users_table_exists_cache is not None:
+        return bool(_title_request_users_table_exists_cache)
+    try:
+        _title_request_users_table_exists_cache = bool(inspect(db.engine).has_table('title_request_users'))
+    except Exception:
+        _title_request_users_table_exists_cache = False
+    return bool(_title_request_users_table_exists_cache)
 
 
 def _prune_upload_jobs_unlocked(now_ts=None):
@@ -3472,18 +3485,41 @@ def list_requests_api():
         except Exception:
             pass
 
+    relation_table_available = _has_title_request_users_table()
     out = []
     for r in items:
+        request_users = []
+        requester_count = 0
+        if relation_table_available:
+            try:
+                request_users = list(getattr(r, 'request_users', []) or [])
+                requester_count = len(request_users)
+            except Exception:
+                request_users = []
+                requester_count = 0
+        primary_user = getattr(r, 'user', None)
+        if primary_user is None and request_users:
+            primary_user = getattr(request_users[0], 'user', None)
         out.append({
             'id': r.id,
             'created_at': int(r.created_at.timestamp()) if r.created_at else None,
             'status': r.status,
+            'user_status': r.status,
             'title_id': r.title_id,
             'title_name': r.title_name,
             'user': {
-                'id': r.user.id if r.user else None,
-                'user': r.user.user if r.user else None,
+                'id': primary_user.id if primary_user else None,
+                'user': primary_user.user if primary_user else None,
             } if include_all else None,
+            'requesters': [
+                {
+                    'id': link.user.id if getattr(link, 'user', None) else None,
+                    'user': link.user.user if getattr(link, 'user', None) else None,
+                }
+                for link in request_users
+                if getattr(link, 'user', None) is not None
+            ] if include_all else None,
+            'requester_count': int(requester_count) if include_all else None,
         })
     return jsonify({'success': True, 'requests': out})
 
@@ -3622,6 +3658,30 @@ def admin_delete_request_api():
         db.session.delete(req)
         db.session.commit()
         return jsonify({'success': True})
+    except Exception as e:
+        db.session.rollback()
+        return api_error(str(e), 500)
+
+
+@app.post('/api/requests/deny')
+@access_required('admin')
+def admin_deny_request_api():
+    data = request.json or {}
+    try:
+        req_id = int(data.get('request_id'))
+    except Exception:
+        return api_error('Invalid request_id.', 400)
+
+    try:
+        req = TitleRequests.query.filter_by(id=req_id).first()
+        if req is None:
+            return api_error('Request not found.', 404)
+        if (req.status or '').strip().lower() == 'denied':
+            return jsonify({'success': True, 'message': 'Request already denied.'})
+
+        req.status = 'denied'
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Request denied.'})
     except Exception as e:
         db.session.rollback()
         return api_error(str(e), 500)

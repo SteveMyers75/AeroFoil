@@ -218,6 +218,18 @@ class TitleRequests(db.Model):
     user = db.relationship('User', backref=db.backref('title_requests', lazy=True, cascade="all, delete-orphan"))
 
 
+class TitleRequestUsers(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
+    request_id = db.Column(db.Integer, db.ForeignKey('title_requests.id', ondelete='CASCADE'), nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=utc_now)
+
+    __table_args__ = (db.UniqueConstraint('user_id', 'request_id', name='uq_title_request_users_user_request'),)
+
+    user = db.relationship('User', backref=db.backref('title_request_links', lazy=True, cascade="all, delete-orphan"))
+    request = db.relationship('TitleRequests', backref=db.backref('request_users', lazy=True, cascade="all, delete-orphan"))
+
+
 class TitleRequestViews(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id', ondelete='CASCADE'), nullable=False)
