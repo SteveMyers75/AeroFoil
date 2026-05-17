@@ -6,7 +6,14 @@ import unittest
 from unittest.mock import patch
 
 import app.downloads.manager as downloads_manager
-from app.downloads.client import queue_download, remove_active_download, remove_completed_download
+from app.downloads.client import (
+    get_download_client_diagnostics,
+    get_download_client_capabilities,
+    get_supported_download_clients,
+    queue_download,
+    remove_active_download,
+    remove_completed_download,
+)
 from app.downloads.manager import (
     _check_completed,
     _adopt_untracked_completed_item,
@@ -24,7 +31,9 @@ from app.downloads.manager import (
     get_downloads_state,
     manual_search_update,
     queue_download_url,
+    dismiss_duplicate_download,
     remove_pending_download,
+    remove_duplicate_download,
     search_update_options,
     sort_download_search_results,
 )
@@ -80,6 +89,53 @@ class ProwlarrProtocolTests(unittest.TestCase):
 
 
 class QueueRoutingTests(unittest.TestCase):
+    def test_supported_download_clients_includes_torrent_and_usenet(self):
+        supported = get_supported_download_clients()
+        keys = {(item.get("protocol"), item.get("type")) for item in supported}
+        self.assertIn(("torrent", "qbittorrent"), keys)
+        self.assertIn(("torrent", "transmission"), keys)
+        self.assertIn(("torrent", "deluge"), keys)
+        self.assertIn(("torrent", "rtorrent"), keys)
+        self.assertIn(("usenet", "sabnzbd"), keys)
+        self.assertIn(("usenet", "nzbget"), keys)
+
+    def test_get_download_client_capabilities_resolves_by_type_when_protocol_missing(self):
+        caps = get_download_client_capabilities("", {"type": "rtorrent"})
+        self.assertIsNotNone(caps)
+        self.assertEqual(caps["protocol"], "torrent")
+        self.assertEqual(caps["type"], "rtorrent")
+        self.assertTrue(caps["supports_categories"])
+        self.assertTrue(caps["supports_download_path"])
+        self.assertTrue(caps["supports_live_status"])
+
+    def test_get_download_client_capabilities_marks_pneumatic_without_live_status(self):
+        caps = get_download_client_capabilities("usenet", {"type": "pneumatic"})
+        self.assertIsNotNone(caps)
+        self.assertEqual(caps["protocol"], "usenet")
+        self.assertEqual(caps["type"], "pneumatic")
+        self.assertFalse(caps["supports_live_status"])
+
+    def test_get_download_client_diagnostics_reports_missing_required_fields(self):
+        diag = get_download_client_diagnostics("", {"type": "rtorrent", "url": ""})
+        self.assertTrue(diag["supported"])
+        self.assertEqual(diag["protocol"], "torrent")
+        self.assertEqual(diag["type"], "rtorrent")
+        self.assertIn("url", diag["missing"])
+        self.assertIn("username", diag["missing"])
+        self.assertIn("password", diag["missing"])
+
+    def test_get_download_client_diagnostics_for_deluge_does_not_require_username(self):
+        diag = get_download_client_diagnostics("", {"type": "deluge", "url": "http://deluge.local", "password": "x"})
+        self.assertTrue(diag["supported"])
+        self.assertEqual(diag["missing"], [])
+
+    def test_get_download_client_diagnostics_for_nzbget_requires_username_and_password(self):
+        diag = get_download_client_diagnostics("", {"type": "nzbget", "url": "http://nzbget.local"})
+        self.assertTrue(diag["supported"])
+        self.assertEqual(diag["protocol"], "usenet")
+        self.assertIn("username", diag["missing"])
+        self.assertIn("password", diag["missing"])
+
     def test_get_download_ui_visibility_handles_all_protocol_configurations(self):
         cases = [
             (
@@ -1033,8 +1089,29 @@ class QueueRoutingTests(unittest.TestCase):
         self.assertEqual(item_id, "abc123")
         add_torrent_mock.assert_called_once()
         self.assertEqual(add_torrent_mock.call_args.kwargs["client_type"], "qbittorrent")
-        self.assertEqual(add_torrent_mock.call_args.kwargs["download_path"], "X:\\fixture-root\\downloads")
-        self.assertTrue(add_torrent_mock.call_args.kwargs["update_only"])
+
+    @patch("app.downloads.client.add_nzbget")
+    def test_queue_download_routes_to_nzbget_when_client_type_is_nzbget(self, add_nzbget_mock):
+        add_nzbget_mock.return_value = (True, "ok", "42")
+
+        ok, message, item_id = queue_download(
+            protocol="",
+            client_cfg={
+                "type": "nzbget",
+                "url": "http://nzbget.local",
+                "username": "user",
+                "password": "pass",
+                "category": "aerofoil",
+            },
+            download_url="https://indexer.example/file.nzb",
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "ok")
+        self.assertEqual(item_id, "42")
+        add_nzbget_mock.assert_called_once()
+        self.assertNotIn("download_path", add_nzbget_mock.call_args.kwargs)
+        self.assertFalse(add_nzbget_mock.call_args.kwargs["update_only"])
 
 
 class SabSelectionTests(unittest.TestCase):
@@ -2354,6 +2431,111 @@ class ManagedCompletionStateTests(unittest.TestCase):
             "delete failed: could not verify downloader state",
         )
         delete_payload_mock.assert_not_called()
+
+    @patch("app.downloads.manager._delete_download_payload", return_value=(True, None))
+    @patch("app.downloads.manager._state_lock")
+    @patch("app.downloads.manager._state", {
+        "running": False,
+        "last_run": 0.0,
+        "pending": {},
+        "completed": set(),
+        "duplicates": [{
+            "id": "dup-1",
+            "label": "Example Release NSW-GRP",
+            "path": "X:\\fixture-root\\downloads\\Example Release",
+            "reason": "duplicate basegame: 0100EXAMPLE000000 already exists in library",
+        }],
+    })
+    def test_remove_duplicate_download_deletes_file_and_removes_entry(
+        self,
+        _state_lock_mock,
+        delete_payload_mock,
+    ):
+        ok, message = remove_duplicate_download("dup-1")
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Deleted rejected duplicate file.")
+        self.assertEqual(downloads_manager._state.get("duplicates"), [])
+        delete_payload_mock.assert_called_once_with("X:\\fixture-root\\downloads\\Example Release")
+
+    @patch("app.downloads.manager._state_lock")
+    @patch("app.downloads.manager._state", {
+        "running": False,
+        "last_run": 0.0,
+        "pending": {},
+        "completed": set(),
+        "duplicates": [{
+            "id": "dup-2",
+            "label": "Example Release NSW-GRP",
+            "path": None,
+            "reason": "duplicate update: 0100EXAMPLE000000 v65536 already known",
+        }],
+    })
+    def test_remove_duplicate_download_rejects_when_path_missing(
+        self,
+        _state_lock_mock,
+    ):
+        ok, message = remove_duplicate_download("dup-2")
+
+        self.assertFalse(ok)
+        self.assertEqual(message, "Duplicate entry has no deletable path.")
+        self.assertEqual(len(downloads_manager._state.get("duplicates") or []), 1)
+
+    @patch("app.downloads.manager._state_lock")
+    @patch("app.downloads.manager._state", {
+        "running": False,
+        "last_run": 0.0,
+        "pending": {},
+        "completed": set(),
+        "duplicates": [{
+            "id": "dup-3",
+            "label": "Example Release NSW-GRP",
+            "path": None,
+            "reason": "duplicate update: 0100EXAMPLE000000 v65536 already known",
+        }],
+    })
+    def test_dismiss_duplicate_download_removes_entry_without_path(
+        self,
+        _state_lock_mock,
+    ):
+        ok, message = dismiss_duplicate_download("dup-3")
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Removed duplicate entry.")
+        self.assertEqual(downloads_manager._state.get("duplicates"), [])
+
+    @patch("app.downloads.manager._state_lock")
+    @patch("app.downloads.manager._state", {
+        "running": False,
+        "last_run": 0.0,
+        "pending": {},
+        "completed": set(),
+        "duplicates": [{
+            "id": None,
+            "timestamp": 1234567890,
+            "label": "Legacy Entry",
+            "reason": "duplicate basegame: already exists",
+            "protocol": "torrent",
+            "path": None,
+        }],
+    })
+    def test_dismiss_duplicate_download_removes_legacy_entry_by_fingerprint(
+        self,
+        _state_lock_mock,
+    ):
+        ok, message = dismiss_duplicate_download(
+            "",
+            fingerprint={
+                "timestamp": 1234567890,
+                "label": "Legacy Entry",
+                "reason": "duplicate basegame: already exists",
+                "protocol": "torrent",
+            },
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Removed duplicate entry.")
+        self.assertEqual(downloads_manager._state.get("duplicates"), [])
 
 
 if __name__ == "__main__":

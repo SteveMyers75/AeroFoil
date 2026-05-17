@@ -1,6 +1,8 @@
 import os
 import logging
 import time
+import hashlib
+import base64
 
 import requests
 
@@ -12,6 +14,10 @@ from app.downloads.update_selection import (
 )
 
 logger = logging.getLogger("downloads.sabnzbd")
+
+NZBGET_GROUP_STATUS_DOWNLOADING = ("DOWNLOADING", "PAUSED", "QUEUED", "LOADING")
+NZBGET_GROUP_STATUS_COMPLETED = ("SUCCESS", "WARNING")
+NZBGET_GROUP_STATUS_FAILED = ("FAILURE", "DELETED")
 
 def test_sabnzbd(url, api_key, timeout_seconds=10):
     if not url:
@@ -451,3 +457,549 @@ def _parse_eta_seconds(value):
         minutes, seconds = [int(part) for part in parts]
         return (minutes * 60) + seconds
     return -1
+
+
+def test_nzbget(url, username=None, password=None, timeout_seconds=10):
+    if not url:
+        return False, "Client URL is required."
+    try:
+        version = _nzbget_request(url, username, password, "version", timeout_seconds=timeout_seconds)
+    except Exception as exc:
+        return False, str(exc)
+    version_text = str(version or "").strip()
+    return True, f"NZBGet OK{f' (v{version_text})' if version_text else ''}."
+
+
+def add_nzbget(
+    url,
+    username,
+    password,
+    download_url,
+    category=None,
+    timeout_seconds=15,
+    expected_name=None,
+    update_only=False,
+    exclude_russian=False,
+    expected_update_number=None,
+    expected_version=None,
+):
+    if not download_url:
+        return False, "Download URL is required.", None
+    if not username:
+        return False, "NZBGet username is required.", None
+    if password is None:
+        return False, "NZBGet password is required.", None
+    name = str(expected_name or "").strip() or os.path.basename(str(download_url or "").split("?", 1)[0]) or "aerofoil.nzb"
+    try:
+        # append(name, url, category, priority, addPaused, dupeKey, dupeScore, dupeMode)
+        result = _nzbget_request(
+            url,
+            username,
+            password,
+            "append",
+            params=[name, str(download_url), str(category or ""), 0, bool(update_only), "", 0, "SCORE"],
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception as exc:
+        return False, str(exc), None
+    if not result:
+        return False, "NZBGet rejected NZB.", None
+    group = _nzbget_find_group_by_name(url, username, password, name, category=category, timeout_seconds=timeout_seconds)
+    nzo_id = str((group or {}).get("NZBID") or "").strip() or None
+    return True, "NZBGet accepted NZB.", nzo_id
+
+
+def list_active_nzbget(url, username, password, category=None, timeout_seconds=15):
+    if not url or not username or password is None:
+        return []
+    try:
+        groups = _nzbget_request(url, username, password, "listgroups", timeout_seconds=timeout_seconds)
+    except Exception:
+        return []
+    out = []
+    for item in (groups or []):
+        if not isinstance(item, dict):
+            continue
+        cat = str(item.get("Category") or "").strip()
+        if category and cat != category:
+            continue
+        status = str(item.get("Status") or "").strip().upper()
+        if status not in NZBGET_GROUP_STATUS_DOWNLOADING:
+            continue
+        total_size = _to_int(item.get("FileSizeMB"), 0) * 1024 * 1024
+        remaining_mb = _to_int(item.get("RemainingSizeMB"), 0)
+        remaining = max(remaining_mb, 0) * 1024 * 1024
+        downloaded = max(total_size - remaining, 0)
+        progress = 0.0 if total_size <= 0 else max(0.0, min((float(downloaded) / float(total_size)) * 100.0, 100.0))
+        out.append({
+            "id": str(item.get("NZBID") or "").strip() or None,
+            "hash": str(item.get("NZBID") or "").strip() or None,
+            "protocol": "usenet",
+            "client_type": "nzbget",
+            "name": str(item.get("NZBName") or item.get("Name") or "").strip(),
+            "status": status.lower(),
+            "progress": progress,
+            "down_speed": max(_to_int(item.get("DownloadRate"), 0), 0),
+            "up_speed": 0,
+            "peers": 0,
+            "seeders": 0,
+            "leechers": 0,
+            "eta": _to_int(item.get("EstimatedSeconds"), -1),
+            "size": total_size,
+            "downloaded": downloaded,
+            "path": str(item.get("DestDir") or "").strip(),
+        })
+    return out
+
+
+def list_history_nzbget(url, username, password, category=None, timeout_seconds=15):
+    if not url or not username or password is None:
+        return []
+    try:
+        history = _nzbget_request(url, username, password, "history", timeout_seconds=timeout_seconds)
+    except Exception:
+        return []
+    groups = []
+    if isinstance(history, dict):
+        groups = history.get("History") or history.get("history") or []
+    elif isinstance(history, list):
+        groups = history
+    out = []
+    for item in groups:
+        if not isinstance(item, dict):
+            continue
+        cat = str(item.get("Category") or "").strip()
+        if category and cat != category:
+            continue
+        status = str(item.get("Status") or "").strip().upper()
+        terminal_state = None
+        if status in NZBGET_GROUP_STATUS_COMPLETED:
+            terminal_state = "completed"
+        elif status in NZBGET_GROUP_STATUS_FAILED:
+            terminal_state = "failed"
+        if not terminal_state:
+            continue
+        out.append({
+            "id": str(item.get("NZBID") or "").strip() or None,
+            "hash": str(item.get("NZBID") or "").strip() or None,
+            "protocol": "usenet",
+            "client_type": "nzbget",
+            "status": status.lower(),
+            "state": terminal_state,
+            "state_reason": str(item.get("Status") or "").strip() or None,
+            "path": str(item.get("DestDir") or "").strip(),
+            "name": str(item.get("NZBName") or item.get("Name") or "").strip(),
+        })
+    return out
+
+
+def list_completed_nzbget(url, username, password, category=None, timeout_seconds=15):
+    return [item for item in list_history_nzbget(url, username, password, category=category, timeout_seconds=timeout_seconds) if item.get("state") == "completed"]
+
+
+def remove_history_nzbget(url, username, password, item_id, timeout_seconds=15, delete_files=False):
+    if not item_id:
+        return False, "NZBGet item id is required."
+    if not username:
+        return False, "NZBGet username is required."
+    if password is None:
+        return False, "NZBGet password is required."
+    try:
+        # EditAction GroupAction "HistoryDelete" with IDs list
+        result = _nzbget_request(
+            url,
+            username,
+            password,
+            "editqueue",
+            params=["HistoryDelete", "", [int(item_id)]],
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception as exc:
+        return False, str(exc)
+    if not result:
+        return False, "NZBGet failed to remove history entry."
+    return True, "NZBGet history entry removed."
+
+
+def remove_queue_item_nzbget(url, username, password, item_id, timeout_seconds=15, delete_files=False):
+    if not item_id:
+        return False, "NZBGet item id is required."
+    if not username:
+        return False, "NZBGet username is required."
+    if password is None:
+        return False, "NZBGet password is required."
+    try:
+        action = "GroupDelete" if delete_files else "GroupParkDelete"
+        result = _nzbget_request(
+            url,
+            username,
+            password,
+            "editqueue",
+            params=[action, "", [int(item_id)]],
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception as exc:
+        return False, str(exc)
+    if not result:
+        return False, "NZBGet failed to remove queue item."
+    return True, "NZBGet queue item removed."
+
+
+def _nzbget_request(base_url, username, password, method, params=None, timeout_seconds=15):
+    base = str(base_url or "").rstrip("/")
+    if not base:
+        raise ValueError("Client URL is required.")
+    if not str(username or "").strip():
+        raise ValueError("NZBGet username is required.")
+    if password is None:
+        raise ValueError("NZBGet password is required.")
+    payload = {
+        "version": "1.1",
+        "method": str(method),
+        "params": list(params or []),
+        "id": 1,
+    }
+    response = requests.post(
+        f"{base}/jsonrpc",
+        json=payload,
+        auth=(str(username), str(password)),
+        headers={"User-Agent": DOWNLOADS_USER_AGENT},
+        timeout=timeout_seconds,
+    )
+    response.raise_for_status()
+    body = response.json() if response.content else {}
+    if isinstance(body, dict) and body.get("error"):
+        error = body.get("error")
+        if isinstance(error, dict):
+            raise RuntimeError(str(error.get("message") or error.get("code") or "NZBGet request failed."))
+        raise RuntimeError(str(error))
+    if not isinstance(body, dict):
+        raise RuntimeError("Invalid NZBGet response.")
+    return body.get("result")
+
+
+def _nzbget_find_group_by_name(url, username, password, name, category=None, timeout_seconds=15):
+    try:
+        groups = _nzbget_request(url, username, password, "listgroups", timeout_seconds=timeout_seconds)
+    except Exception:
+        return None
+    expected_name = str(name or "").strip().lower()
+    expected_category = str(category or "").strip()
+    for item in (groups or []):
+        if not isinstance(item, dict):
+            continue
+        nzb_name = str(item.get("NZBName") or item.get("Name") or "").strip().lower()
+        if expected_name and nzb_name != expected_name:
+            continue
+        if expected_category:
+            cat = str(item.get("Category") or "").strip()
+            if cat != expected_category:
+                continue
+        return item
+    return None
+
+
+def test_pneumatic(watch_folder, timeout_seconds=10):
+    _ = timeout_seconds
+    folder = str(watch_folder or "").strip()
+    if not folder:
+        return False, "Pneumatic watch folder is required in URL field."
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception as exc:
+        return False, f"Pneumatic folder error: {exc}"
+    if not os.path.isdir(folder):
+        return False, "Pneumatic folder is not a directory."
+    return True, f"Pneumatic OK ({folder})."
+
+
+def add_pneumatic(watch_folder, download_url, timeout_seconds=15):
+    folder = str(watch_folder or "").strip()
+    if not folder:
+        return False, "Pneumatic watch folder is required.", None
+    os.makedirs(folder, exist_ok=True)
+    stamp = int(time.time() * 1000)
+    target = os.path.join(folder, f"aerofoil_{stamp}.nzb")
+    try:
+        resp = requests.get(download_url, timeout=timeout_seconds, headers={"User-Agent": DOWNLOADS_USER_AGENT})
+        if resp.status_code == 200 and resp.content:
+            with open(target, "wb") as handle:
+                handle.write(resp.content)
+            return True, "Pneumatic wrote NZB file.", os.path.basename(target)
+    except Exception:
+        pass
+    target = os.path.join(folder, f"aerofoil_{stamp}.nzburl")
+    with open(target, "w", encoding="utf-8") as handle:
+        handle.write(str(download_url or ""))
+    return True, "Pneumatic wrote NZB URL file.", os.path.basename(target)
+
+
+def _downloadstation_api_url(url):
+    base = str(url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if base.endswith("/webapi"):
+        return base
+    return f"{base}/webapi"
+
+
+def _downloadstation_auth(url, username, password, timeout_seconds=10):
+    api = _downloadstation_api_url(url)
+    if not api:
+        return False, "Client URL is required.", None
+    params = {
+        "api": "SYNO.API.Auth",
+        "version": "6",
+        "method": "login",
+        "account": username or "",
+        "passwd": password or "",
+        "session": "DownloadStation",
+        "format": "sid",
+    }
+    try:
+        resp = requests.get(f"{api}/auth.cgi", params=params, timeout=timeout_seconds, headers={"User-Agent": DOWNLOADS_USER_AGENT})
+    except Exception as exc:
+        return False, f"Download Station request failed: {exc}", None
+    if resp.status_code != 200:
+        return False, f"Download Station returned {resp.status_code}.", None
+    payload = resp.json() if resp.content else {}
+    if not payload.get("success"):
+        return False, "Download Station authentication failed.", None
+    sid = ((payload.get("data") or {}).get("sid") or "").strip()
+    if not sid:
+        return False, "Download Station sid not found.", None
+    return True, None, sid
+
+
+def _downloadstation_task(url, sid, method, timeout_seconds=15, extra=None):
+    api = _downloadstation_api_url(url)
+    params = {
+        "api": "SYNO.DownloadStation.Task",
+        "version": "1",
+        "method": method,
+        "_sid": sid,
+    }
+    params.update(dict(extra or {}))
+    resp = requests.get(f"{api}/DownloadStation/task.cgi", params=params, timeout=timeout_seconds, headers={"User-Agent": DOWNLOADS_USER_AGENT})
+    if resp.status_code != 200:
+        return False, f"Download Station returned {resp.status_code}.", None
+    payload = resp.json() if resp.content else {}
+    if not payload.get("success"):
+        return False, "Download Station request failed.", None
+    return True, None, payload.get("data") or {}
+
+
+def test_downloadstation(url, username=None, password=None, timeout_seconds=10):
+    ok, error, sid = _downloadstation_auth(url, username, password, timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error
+    ok, error, _ = _downloadstation_task(url, sid, "list", timeout_seconds=timeout_seconds, extra={"additional": "detail"})
+    if not ok:
+        return False, error
+    return True, "Download Station OK."
+
+
+def add_downloadstation_nzb(url, username, password, download_url, category=None, timeout_seconds=15):
+    _ = category
+    ok, error, sid = _downloadstation_auth(url, username, password, timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error, None
+    task_id = f"ds-{int(time.time() * 1000)}"
+    ok, error, _data = _downloadstation_task(
+        url,
+        sid,
+        "create",
+        timeout_seconds=timeout_seconds,
+        extra={"uri": download_url},
+    )
+    if not ok:
+        return False, error, None
+    return True, "Download Station accepted NZB.", task_id
+
+
+def list_downloadstation(url, username, password, category=None, timeout_seconds=15):
+    _ = category
+    ok, error, sid = _downloadstation_auth(url, username, password, timeout_seconds=timeout_seconds)
+    if not ok:
+        logger.warning("Failed to load Download Station queue: %s", error)
+        return []
+    ok, error, data = _downloadstation_task(url, sid, "list", timeout_seconds=timeout_seconds, extra={"additional": "detail,transfer"})
+    if not ok:
+        logger.warning("Failed to load Download Station queue: %s", error)
+        return []
+    out = []
+    for item in (data.get("tasks") or []):
+        if str(item.get("type") or "").lower() not in ("nzb", "http", "ftp"):
+            continue
+        status_raw = str(item.get("status") or "").lower()
+        size = _to_int(item.get("size"), 0)
+        transfer = (item.get("additional") or {}).get("transfer") or {}
+        downloaded = _to_int(transfer.get("size_downloaded"), 0)
+        progress = (downloaded / size * 100.0) if size > 0 else _to_float(item.get("size_downloaded"), 0.0)
+        mapped = "downloading"
+        if status_raw in ("finished", "seeding"):
+            mapped = "completed"
+        elif status_raw in ("paused", "waiting"):
+            mapped = "paused"
+        elif status_raw in ("error",):
+            mapped = "error"
+        out.append({
+            "id": str(item.get("id") or ""),
+            "name": str(item.get("title") or item.get("id") or "").strip(),
+            "status": mapped,
+            "progress": max(0.0, min(100.0, progress)),
+            "size": size,
+            "downloaded": downloaded,
+            "down_speed": _to_int(transfer.get("speed_download"), 0),
+            "up_speed": _to_int(transfer.get("speed_upload"), 0),
+            "eta": -1,
+            "path": str(((item.get("additional") or {}).get("detail") or {}).get("destination") or ""),
+            "category": None,
+            "protocol": "usenet",
+            "client_type": "downloadstation",
+        })
+    return out
+
+
+def remove_downloadstation(url, username, password, item_id, timeout_seconds=15, delete_files=False):
+    _ = delete_files
+    ok, error, sid = _downloadstation_auth(url, username, password, timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error
+    ok, error, _ = _downloadstation_task(url, sid, "delete", timeout_seconds=timeout_seconds, extra={"id": item_id, "force_complete": "false"})
+    if not ok:
+        return False, error
+    return True, "Download Station task removed."
+
+
+def _nzbvortex_api_url(url):
+    base = str(url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if base.endswith("/api"):
+        return base
+    return f"{base}/api"
+
+
+def _nzbvortex_login(url, api_key, timeout_seconds=10):
+    api = _nzbvortex_api_url(url)
+    if not api:
+        return False, "Client URL is required.", None
+    nonce_resp = requests.get(f"{api}/auth/nonce", timeout=timeout_seconds, headers={"User-Agent": DOWNLOADS_USER_AGENT})
+    if nonce_resp.status_code != 200:
+        return False, f"NZBVortex returned {nonce_resp.status_code}.", None
+    nonce_payload = nonce_resp.json() if nonce_resp.content else {}
+    nonce = str(nonce_payload.get("authNonce") or nonce_payload.get("nonce") or "").strip()
+    if not nonce:
+        return False, "NZBVortex nonce not found.", None
+    cnonce = str(int(time.time() * 1000))
+    hash_raw = f"{nonce}:{cnonce}:{api_key or ''}".encode("utf-8")
+    digest = base64.b64encode(hashlib.sha256(hash_raw).digest()).decode("ascii")
+    login = requests.get(
+        f"{api}/auth/login",
+        params={"nonce": nonce, "cnonce": cnonce, "hash": digest},
+        timeout=timeout_seconds,
+        headers={"User-Agent": DOWNLOADS_USER_AGENT},
+    )
+    if login.status_code != 200:
+        return False, f"NZBVortex returned {login.status_code}.", None
+    payload = login.json() if login.content else {}
+    session_id = str(payload.get("sessionId") or payload.get("sessionid") or "").strip()
+    if not session_id:
+        return False, "NZBVortex authentication failed.", None
+    return True, None, session_id
+
+
+def test_nzbvortex(url, api_key, timeout_seconds=10):
+    ok, error, sid = _nzbvortex_login(url, api_key, timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error
+    api = _nzbvortex_api_url(url)
+    resp = requests.get(f"{api}/app/appversion", params={"sessionid": sid}, timeout=timeout_seconds, headers={"User-Agent": DOWNLOADS_USER_AGENT})
+    if resp.status_code != 200:
+        return False, f"NZBVortex returned {resp.status_code}."
+    return True, "NZBVortex OK."
+
+
+def add_nzbvortex(url, api_key, download_url, category=None, timeout_seconds=15):
+    ok, error, sid = _nzbvortex_login(url, api_key, timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error, None
+    api = _nzbvortex_api_url(url)
+    try:
+        nzb = requests.get(download_url, timeout=timeout_seconds, headers={"User-Agent": DOWNLOADS_USER_AGENT})
+    except Exception as exc:
+        return False, str(exc), None
+    if nzb.status_code != 200:
+        return False, f"NZBVortex source download returned {nzb.status_code}.", None
+    files = {"name": (f"aerofoil_{int(time.time()*1000)}.nzb", nzb.content, "application/x-nzb")}
+    params = {"sessionid": sid, "priority": 0}
+    if category:
+        params["groupname"] = category
+    resp = requests.post(f"{api}/nzb/add", params=params, files=files, timeout=timeout_seconds, headers={"User-Agent": DOWNLOADS_USER_AGENT})
+    if resp.status_code != 200:
+        return False, f"NZBVortex returned {resp.status_code}.", None
+    payload = resp.json() if resp.content else {}
+    item_id = str(payload.get("id") or "").strip() or None
+    return True, "NZBVortex accepted NZB.", item_id
+
+
+def list_nzbvortex(url, api_key, category=None, timeout_seconds=15):
+    ok, error, sid = _nzbvortex_login(url, api_key, timeout_seconds=timeout_seconds)
+    if not ok:
+        logger.warning("Failed to load NZBVortex queue: %s", error)
+        return []
+    api = _nzbvortex_api_url(url)
+    params = {"sessionid": sid, "limitDone": 200}
+    if category:
+        params["groupName"] = category
+    resp = requests.get(f"{api}/nzb", params=params, timeout=timeout_seconds, headers={"User-Agent": DOWNLOADS_USER_AGENT})
+    if resp.status_code != 200:
+        logger.warning("Failed to load NZBVortex queue: status %s", resp.status_code)
+        return []
+    payload = resp.json() if resp.content else {}
+    out = []
+    for item in payload.get("items") or []:
+        status_raw = str(item.get("state") or item.get("status") or "").lower()
+        mapped = "downloading"
+        if status_raw in ("done", "completed"):
+            mapped = "completed"
+        elif status_raw in ("paused", "stopped"):
+            mapped = "paused"
+        elif status_raw in ("error", "failed"):
+            mapped = "error"
+        out.append({
+            "id": str(item.get("id") or ""),
+            "name": str(item.get("name") or item.get("nzbName") or item.get("id") or ""),
+            "status": mapped,
+            "progress": _to_float(item.get("progress"), 0.0),
+            "size": _to_int(item.get("size"), 0),
+            "downloaded": _to_int(item.get("downloaded"), 0),
+            "down_speed": _to_int(item.get("speed"), 0),
+            "up_speed": 0,
+            "eta": -1,
+            "path": str(item.get("destination") or ""),
+            "category": str(item.get("groupName") or ""),
+            "protocol": "usenet",
+            "client_type": "nzbvortex",
+        })
+    return out
+
+
+def remove_nzbvortex(url, api_key, item_id, timeout_seconds=15, delete_files=False):
+    ok, error, sid = _nzbvortex_login(url, api_key, timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error
+    api = _nzbvortex_api_url(url)
+    action = "cancelDelete" if delete_files else "cancel"
+    resp = requests.get(f"{api}/nzb/{item_id}/{action}", params={"sessionid": sid}, timeout=timeout_seconds, headers={"User-Agent": DOWNLOADS_USER_AGENT})
+    if resp.status_code != 200:
+        return False, f"NZBVortex returned {resp.status_code}."
+    return True, "NZBVortex item removed."
+
+
+def _to_int(value, default=0):
+    try:
+        return int(value)
+    except Exception:
+        return default

@@ -24,7 +24,7 @@ from datetime import timedelta, datetime
 flask.cli.show_server_banner = lambda *args: None
 from app.constants import *
 from app.settings import *
-from app.downloads import ProwlarrClient, filter_results, test_download_client, run_downloads_job, manual_search_update, queue_download_url, search_update_options, check_completed_downloads, get_downloads_state, get_active_downloads, get_download_ui_visibility, filter_download_search_results, sort_download_search_results, remove_pending_download
+from app.downloads import ProwlarrClient, filter_results, test_download_client, get_supported_download_clients, get_download_client_capabilities, get_download_client_diagnostics, run_downloads_job, manual_search_update, queue_download_url, search_update_options, check_completed_downloads, get_downloads_state, get_active_downloads, get_download_ui_visibility, filter_download_search_results, sort_download_search_results, remove_pending_download, remove_duplicate_download, dismiss_duplicate_download
 from app.library import organize_library, delete_older_updates, delete_duplicates, delete_library_content, delete_orphaned_addons
 from app.db import *
 from app.shop import *
@@ -1518,6 +1518,10 @@ def _save_sync_latest_dir(user, title_id):
     return os.path.join(_save_sync_title_dir(user, title_id), 'latest')
 
 
+def _save_sync_latest_archive_path(user, title_id):
+    return os.path.join(_save_sync_title_dir(user, title_id), '_latest.zip')
+
+
 def _save_sync_archive_path(user, title_id, save_id=None):
     if save_id:
         return os.path.join(_save_sync_title_dir(user, title_id), f'{save_id}.zip')
@@ -1644,6 +1648,52 @@ def _save_sync_refresh_latest_from_archive(user, title_id, archive_path):
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def _save_sync_build_archive_from_directory(source_dir, archive_path):
+    if not os.path.isdir(source_dir):
+        raise ValueError('Latest save directory does not exist.')
+
+    started_at = time.time()
+    temp_archive = archive_path + '.tmp'
+    if os.path.exists(temp_archive):
+        os.remove(temp_archive)
+
+    try:
+        with zipfile.ZipFile(temp_archive, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+            has_files = False
+            file_count = 0
+            for root, _dirs, files in os.walk(source_dir):
+                for filename in files:
+                    abs_path = os.path.join(root, filename)
+                    rel_path = os.path.relpath(abs_path, source_dir)
+                    archive.write(abs_path, arcname=rel_path)
+                    has_files = True
+                    file_count += 1
+            if not has_files:
+                raise ValueError('Latest save directory is empty.')
+        os.replace(temp_archive, archive_path)
+        elapsed_ms = int((time.time() - started_at) * 1000)
+        archive_size = 0
+        try:
+            archive_size = int(os.path.getsize(archive_path))
+        except Exception:
+            archive_size = 0
+        logger.info(
+            'Save latest archive generated source=%s archive=%s files=%s bytes=%s elapsed_ms=%s',
+            source_dir,
+            archive_path,
+            file_count,
+            archive_size,
+            elapsed_ms,
+        )
+    except Exception:
+        try:
+            if os.path.exists(temp_archive):
+                os.remove(temp_archive)
+        except Exception:
+            pass
+        raise
+
+
 def _save_sync_refresh_latest_for_title(user, title_id):
     versions = _save_sync_collect_versions_for_title(user, title_id)
     latest_archive = None
@@ -1653,8 +1703,14 @@ def _save_sync_refresh_latest_for_title(user, title_id):
             latest_archive = archive_path
             break
     latest_dir = _save_sync_latest_dir(user, title_id)
+    latest_archive_path = _save_sync_latest_archive_path(user, title_id)
     if not latest_archive:
         _save_sync_clear_directory(latest_dir)
+        try:
+            if os.path.isfile(latest_archive_path):
+                os.remove(latest_archive_path)
+        except Exception:
+            pass
         return
     _save_sync_refresh_latest_from_archive(user, title_id, latest_archive)
 
@@ -1666,6 +1722,8 @@ def _save_sync_collect_versions_for_title(user, title_id):
         try:
             for filename in sorted(os.listdir(title_dir)):
                 if not filename.lower().endswith('.zip'):
+                    continue
+                if filename == '_latest.zip':
                     continue
                 save_id = _normalize_save_id(filename[:-4])
                 if not save_id:
@@ -1763,6 +1821,45 @@ def _save_sync_collect_versions(user):
 
 
 def _save_sync_resolve_download_archive(user, title_id, save_id=None):
+    latest_archive_path = _save_sync_latest_archive_path(user, title_id)
+    wants_generated_latest = (save_id is None) or (str(save_id).strip().lower() == 'latest')
+    if wants_generated_latest and _is_cyberfoil_request():
+        latest_dir = _save_sync_latest_dir(user, title_id)
+        if os.path.isdir(latest_dir):
+            try:
+                _save_sync_build_archive_from_directory(latest_dir, latest_archive_path)
+            except Exception as e:
+                logger.warning(
+                    'Failed generating latest save archive for user %s title %s from latest directory: %s',
+                    getattr(user, 'user', '?'),
+                    title_id,
+                    e,
+                )
+    if wants_generated_latest and _is_cyberfoil_request() and os.path.isfile(latest_archive_path):
+        latest_size = 0
+        latest_created_ts = int(time.time())
+        try:
+            latest_size = int(os.path.getsize(latest_archive_path))
+        except Exception:
+            latest_size = 0
+        try:
+            latest_created_ts = int(os.path.getmtime(latest_archive_path))
+        except Exception:
+            latest_created_ts = int(time.time())
+        return {
+            'title_id': title_id,
+            'save_id': 'latest',
+            'size': latest_size,
+            'note': 'latest',
+            'created_ts': latest_created_ts,
+            'created_at': _save_sync_format_created_at(latest_created_ts),
+            'download_url': f'/api/saves/download/{title_id}.zip',
+            'delete_url': '',
+            'archive_path': latest_archive_path,
+            'legacy': False,
+            'generated_latest': True,
+        }, None
+
     versions = _save_sync_collect_versions_for_title(user, title_id)
     if not versions:
         return None, 'Save archive not found.'
@@ -3914,6 +4011,8 @@ def get_settings_api():
             settings['library']['maintenance_last_run'] = last_run.isoformat() if last_run else None
     except Exception:
         pass
+    settings.setdefault('downloads', {})
+    settings['downloads']['client_capabilities'] = get_supported_download_clients()
     return jsonify(settings)
 
 @app.post('/api/settings/titles')
@@ -4265,6 +4364,17 @@ def test_downloads_prowlarr_api():
 @access_required('admin')
 def test_downloads_client_api():
     data = request.json or {}
+    diagnostics = get_download_client_diagnostics(
+        '',
+        {
+            'type': data.get('type', ''),
+            'url': data.get('url', ''),
+            'username': data.get('username', ''),
+            'password': data.get('password', ''),
+            'api_key': data.get('api_key', ''),
+        }
+    ) or {}
+    capabilities = diagnostics.get('capabilities') or {}
     ok, message = test_download_client(
         client_type=data.get('type', ''),
         url=data.get('url', ''),
@@ -4272,14 +4382,63 @@ def test_downloads_client_api():
         password=data.get('password', ''),
         api_key=data.get('api_key', '')
     )
+    detail = None
+    failure_kind = None
+    message_text = str(message or '').strip()
+    message_lower = message_text.lower()
+    missing_fields = diagnostics.get('missing') if isinstance(diagnostics, dict) else []
+    if ok:
+        failure_kind = None
+    elif isinstance(missing_fields, list) and missing_fields:
+        failure_kind = 'missing_credentials'
+        detail = f"Missing required fields: {', '.join(str(field) for field in missing_fields)}."
+    elif (
+        'authentication failed' in message_lower
+        or 'login failed' in message_lower
+        or 'unauthorized' in message_lower
+        or '(401' in message_lower
+        or re.search(r'(^|\s|\()401(\b|\)|\.)', message_lower)
+    ):
+        failure_kind = 'authentication'
+        detail = 'Authentication failed. Verify username/password or API key for this client.'
+    elif (
+        'forbidden' in message_lower
+        or '(403' in message_lower
+        or re.search(r'(^|\s|\()403(\b|\)|\.)', message_lower)
+    ):
+        failure_kind = 'authorization'
+        detail = 'Client denied access. Check account permissions and client security settings.'
+    elif 'timeout' in message_lower or 'timed out' in message_lower:
+        failure_kind = 'timeout'
+        detail = 'Connection timed out. Verify the URL/port, client availability, and network reachability.'
+    elif 'url is required' in message_lower or 'url is invalid' in message_lower:
+        failure_kind = 'invalid_url'
+        detail = 'Client URL is invalid or missing. Include protocol and port (for example http://host:8080).'
+    elif 'connection' in message_lower or 'refused' in message_lower or 'failed to establish a new connection' in message_lower:
+        failure_kind = 'connection'
+        detail = 'Could not connect to the client. Confirm the host, port, and firewall/network settings.'
+    elif 'unsupported' in message_lower:
+        failure_kind = 'unsupported_client'
+        detail = 'Selected client type is not supported for testing.'
+    else:
+        failure_kind = 'unknown'
+        detail = 'Client test failed. Review URL, credentials, and server logs for more detail.'
     download_path = (data.get('download_path') or '').strip()
     warning = None
-    if ok and download_path:
+    supports_download_path = bool(capabilities.get('supports_download_path'))
+    if ok and download_path and supports_download_path:
         if not os.path.isdir(download_path):
             warning = f"Download path not found: {download_path}"
         elif not os.access(download_path, os.W_OK):
             warning = f"Download path not writable: {download_path}"
-    return jsonify({'success': ok, 'message': message, 'warning': warning})
+    return jsonify({
+        'success': ok,
+        'message': message,
+        'detail': detail,
+        'failure_kind': failure_kind,
+        'warning': warning,
+        'diagnostics': diagnostics,
+    })
 
 @app.post('/api/downloads/manual')
 @access_required('admin')
@@ -4487,6 +4646,24 @@ def downloads_queue_state():
 def downloads_queue_delete():
     data = request.json or {}
     ok, message = remove_pending_download(data.get('key'))
+    state = get_downloads_state()
+    return jsonify({'success': ok, 'message': message, 'state': state})
+
+
+@app.post('/api/downloads/duplicates/delete')
+@access_required('admin')
+def downloads_duplicates_delete():
+    data = request.json or {}
+    ok, message = remove_duplicate_download(data.get('id'))
+    state = get_downloads_state()
+    return jsonify({'success': ok, 'message': message, 'state': state})
+
+
+@app.post('/api/downloads/duplicates/dismiss')
+@access_required('admin')
+def downloads_duplicates_dismiss():
+    data = request.json or {}
+    ok, message = dismiss_duplicate_download(data.get('id'), fingerprint=data.get('fingerprint'))
     state = get_downloads_state()
     return jsonify({'success': ok, 'message': message, 'state': state})
 
@@ -5083,7 +5260,45 @@ def list_saves_api():
         logger.warning('Unable to load TitleDB for save metadata: %s', e)
 
     try:
+        is_cyberfoil = _is_cyberfoil_request()
         save_versions = _save_sync_collect_versions(user)
+        seen_titles = {
+            str(item.get('title_id') or '').strip().upper()
+            for item in save_versions
+            if str(item.get('title_id') or '').strip()
+        }
+        for title_id in sorted(seen_titles):
+            latest_dir = _save_sync_latest_dir(user, title_id)
+            if not os.path.isdir(latest_dir):
+                continue
+            latest_created_ts = int(time.time())
+            try:
+                latest_created_ts = int(os.path.getmtime(latest_dir))
+            except Exception:
+                latest_created_ts = int(time.time())
+            save_versions.append({
+                'title_id': title_id,
+                'save_id': 'latest',
+                'size': 0,
+                'note': 'latest directory',
+                'created_ts': latest_created_ts,
+                'created_at': _save_sync_format_created_at(latest_created_ts),
+                'download_url': f'/api/saves/download/{title_id}/latest.zip',
+                'delete_url': '',
+                'archive_path': '',
+                'legacy': False,
+                'latest_directory': True,
+            })
+        latest_by_title = {}
+        for version in save_versions:
+            title_id = str(version.get('title_id') or '').strip().upper()
+            if not title_id:
+                continue
+            created_ts = int(version.get('created_ts') or 0)
+            save_id = str(version.get('save_id') or '')
+            current = latest_by_title.get(title_id)
+            if current is None or created_ts > current.get('created_ts', 0):
+                latest_by_title[title_id] = {'created_ts': created_ts, 'save_id': save_id}
         title_metadata = {}
         for version in save_versions:
             title_id = str(version.get('title_id') or '').strip().upper()
@@ -5114,6 +5329,13 @@ def list_saves_api():
             download_url = str(version.get('download_url') or '')
             delete_url = str(version.get('delete_url') or '')
             icon_url = f'/api/shop/icon/{title_id}'
+            latest_info = latest_by_title.get(title_id) or {}
+            is_latest = (
+                int(latest_info.get('created_ts') or 0) == created_ts
+                and str(latest_info.get('save_id') or '') == save_id
+            )
+            latest_note = ' [latest]' if (is_cyberfoil and is_latest) else ''
+            note_with_latest = f'{note}{latest_note}'.strip()
             saves.append({
                 'title_id': title_id,
                 'titleId': title_id,
@@ -5124,13 +5346,19 @@ def list_saves_api():
                 'size': size,
                 'save_id': save_id,
                 'saveId': save_id,
-                'note': note,
-                'save_note': note,
-                'saveNote': note,
+                'note': note_with_latest if is_cyberfoil else note,
+                'save_note': note_with_latest if is_cyberfoil else note,
+                'saveNote': note_with_latest if is_cyberfoil else note,
                 'created_at': created_at,
                 'createdAt': created_at,
                 'created_ts': created_ts,
                 'createdTs': created_ts,
+                'latest_directory': bool(version.get('latest_directory')),
+                'latestDirectory': bool(version.get('latest_directory')),
+                'is_latest': is_latest,
+                'isLatest': is_latest,
+                'latest_available_save_id': str(latest_info.get('save_id') or ''),
+                'latestAvailableSaveId': str(latest_info.get('save_id') or ''),
                 'icon_url': icon_url,
                 'iconUrl': icon_url,
                 'icon_remote_url': cached_meta['icon_remote_url'],
@@ -5257,25 +5485,76 @@ def download_save_api(title_id, save_id=None):
     if user is None:
         return api_error('Save sync authorization failed.', 403)
 
+    requested_save_id = str(save_id or '').strip()
+    client_kind = 'cyberfoil' if _is_cyberfoil_request() else 'other'
+
     normalized_title_id = _normalize_save_title_id(title_id)
     if not normalized_title_id:
+        logger.warning(
+            'Save download rejected for user %s: invalid title_id=%s save_id=%s client=%s',
+            getattr(user, 'user', '?'),
+            title_id,
+            requested_save_id or '-',
+            client_kind,
+        )
         return api_error('Invalid title_id for save download.', 400)
+
+    logger.info(
+        'Save download request user=%s title=%s save_id=%s client=%s',
+        getattr(user, 'user', '?'),
+        normalized_title_id,
+        requested_save_id or 'latest',
+        client_kind,
+    )
 
     selected_archive, resolve_error = _save_sync_resolve_download_archive(user, normalized_title_id, save_id=save_id)
     if selected_archive is None:
+        logger.warning(
+            'Save download resolve failed user=%s title=%s save_id=%s client=%s error=%s',
+            getattr(user, 'user', '?'),
+            normalized_title_id,
+            requested_save_id or 'latest',
+            client_kind,
+            resolve_error or 'not found',
+        )
         if resolve_error and str(resolve_error).lower().startswith('invalid'):
             return api_error(resolve_error, 400)
         return api_error(resolve_error or 'Save archive not found.', 404)
 
     archive_path = str(selected_archive.get('archive_path') or '')
     if not os.path.isfile(archive_path):
+        logger.warning(
+            'Save download archive missing user=%s title=%s save_id=%s path=%s client=%s',
+            getattr(user, 'user', '?'),
+            normalized_title_id,
+            requested_save_id or 'latest',
+            archive_path or '-',
+            client_kind,
+        )
         return api_error('Save archive not found.', 404)
 
     selected_save_id = str(selected_archive.get('save_id') or '').strip()
+    generated_latest = bool(selected_archive.get('generated_latest'))
+    archive_size = 0
+    try:
+        archive_size = int(os.path.getsize(archive_path))
+    except Exception:
+        archive_size = 0
     if selected_save_id and selected_save_id != 'legacy':
         download_name = f'{normalized_title_id}_{selected_save_id}.zip'
     else:
         download_name = f'{normalized_title_id}.zip'
+
+    logger.info(
+        'Save download serving user=%s title=%s resolved_save_id=%s bytes=%s generated_latest=%s client=%s path=%s',
+        getattr(user, 'user', '?'),
+        normalized_title_id,
+        selected_save_id or 'latest',
+        archive_size,
+        generated_latest,
+        client_kind,
+        archive_path,
+    )
 
     return send_from_directory(
         os.path.dirname(archive_path),

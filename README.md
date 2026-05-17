@@ -208,12 +208,12 @@ AeroFoil can automatically search for missing updates using Prowlarr, route torr
    - **Indexer IDs** (optional, comma separated). If set, AeroFoil will limit searches to these indexers.
    - Use **Test Prowlarr** to validate connectivity and indexer IDs (missing IDs show as warnings).
 4. Configure **Torrent Client**:
-   - **Client**: qBittorrent, Transmission, or Deluge.
+   - **Client**: multiple clients are supported, including qBittorrent, Transmission, Deluge, rTorrent, and others listed in the Settings UI.
    - **Client URL** and credentials.
    - **Download path** (optional): if set, AeroFoil will warn if it doesn't exist or isn't writable.
    - Use **Test torrent client** to validate connectivity.
 5. Configure **Usenet Client** if you want Prowlarr usenet results to queue automatically:
-   - **Client**: SABnzbd.
+   - **Client**: multiple usenet clients are supported, including SABnzbd, NZBGet, Download Station, NZBVortex, and others listed in the Settings UI.
    - **Client URL** and **API Key**.
    - **SABnzbd category**: AeroFoil uses this to identify managed usenet downloads.
    - Use **Test usenet client** to validate connectivity.
@@ -224,7 +224,11 @@ AeroFoil can automatically search for missing updates using Prowlarr, route torr
 - The downloader runs on a schedule and respects the configured interval, skipping runs if the interval has not elapsed.
 - Completed downloads are detected by torrent category/tag or SABnzbd category and trigger a library scan + refresh.
 - Manual search results include protocol-aware filtering, and pending queue entries can be removed from the downloads page if they become stale.
+- Rejected duplicate imports now support two actions in Downloads:
+  - `Delete file`: deletes the duplicate file from disk when a concrete local path is available.
+  - `Remove`: dismisses the duplicate entry from the list without deleting files.
 - The downloads page shows both pending queue state and active client summaries, adjusting torrent-only columns when only usenet activity is present.
+- Successfully imported items are removed from the pending queue and no longer shown in Downloads (this page is for active/pending state, not historical completed items).
 
 ## Titles configuration
 In the `Settings` page under the `Titles` section is where you specify the language of your Shop (currently the same for all users).

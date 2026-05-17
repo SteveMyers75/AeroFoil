@@ -6,6 +6,7 @@ import re
 import secrets
 import time
 import xmlrpc.client
+import hmac
 from urllib.parse import urlencode, urlparse
 
 import requests
@@ -102,6 +103,11 @@ def _transmission_request(session, base, payload, timeout_seconds):
 
 
 def _login_qbittorrent(session, base, username=None, password=None, timeout_seconds=10):
+    # qBittorrent Web API requires Referer/Origin on authenticated API requests in newer releases.
+    base_ref = str(base or "").strip().rstrip("/") + "/"
+    if base_ref:
+        session.headers.setdefault("Referer", base_ref)
+        session.headers.setdefault("Origin", base_ref.rstrip("/"))
     if not username and not password:
         return True
     login_resp = session.post(
@@ -109,6 +115,8 @@ def _login_qbittorrent(session, base, username=None, password=None, timeout_seco
         data={"username": username or "", "password": password or ""},
         timeout=timeout_seconds,
     )
+    if login_resp.status_code == 204:
+        return True
     return login_resp.status_code == 200 and login_resp.text.strip() in ("Ok.", "")
 
 
@@ -125,17 +133,17 @@ def _rtorrent_xmlrpc_endpoints(url):
     return [f"{base}/RPC2", f"{base}/RPC1", f"{base}/plugins/rpc/rpc.php"]
 
 
-def _rtorrent_xmlrpc(url, method, params=None, timeout_seconds=10, username=None, password=None):
+def _rtorrent_xmlrpc(url, method, params=None, timeout_seconds=10, username=None, password=None, session=None):
     endpoints = _rtorrent_xmlrpc_endpoints(url)
     if not endpoints:
         return False, "rTorrent URL is invalid.", None
     payload = xmlrpc.client.dumps(tuple(params or []), methodname=method)
     headers = {"Content-Type": "text/xml", "User-Agent": DOWNLOADS_USER_AGENT}
-    session = _new_client_session(username, password)
+    request_session = session or _new_client_session(username, password)
     last_error = "rTorrent returned an error."
     for endpoint in endpoints:
         try:
-            resp = session.post(endpoint, data=payload.encode("utf-8"), headers=headers, timeout=timeout_seconds)
+            resp = request_session.post(endpoint, data=payload.encode("utf-8"), headers=headers, timeout=timeout_seconds)
         except Exception as exc:
             last_error = f"rTorrent request failed: {exc}"
             continue
@@ -158,9 +166,22 @@ def _rtorrent_xmlrpc(url, method, params=None, timeout_seconds=10, username=None
 
 def _build_rtorrent_managed_label(category):
     category_text = str(category or "").strip()
+    if category_text.lower() in MANAGED_TAGS:
+        return AEROFOIL_MANAGED_TAG
     if category_text:
         return f"{AEROFOIL_MANAGED_TAG}:{category_text}"
     return AEROFOIL_MANAGED_TAG
+
+
+def _build_rtorrent_add_commands(category=None, download_path=None):
+    commands = []
+    managed_label = _build_rtorrent_managed_label(category)
+    if managed_label:
+        commands.append(f"d.custom1.set={managed_label}")
+    download_path_text = str(download_path or "").strip()
+    if download_path_text:
+        commands.append(f"d.directory.set={download_path_text}")
+    return commands
 
 
 def test_torrent_client(client_type, url, username=None, password=None, timeout_seconds=10):
@@ -175,6 +196,26 @@ def test_torrent_client(client_type, url, username=None, password=None, timeout_
         return _test_deluge(url, password, timeout_seconds)
     if client_type == "rtorrent":
         return _test_rtorrent(url, username, password, timeout_seconds)
+    if client_type == "utorrent":
+        return _test_utorrent(url, username, password, timeout_seconds)
+    if client_type == "aria2":
+        return _test_aria2(url, password, timeout_seconds)
+    if client_type == "rqbit":
+        return _test_rqbit(url, username, password, timeout_seconds)
+    if client_type == "flood":
+        return _test_flood(url, username, password, timeout_seconds)
+    if client_type == "vuze":
+        return _test_transmission(url, username, password, timeout_seconds)
+    if client_type == "hadouken":
+        return _test_hadouken(url, username, password, timeout_seconds)
+    if client_type == "tribler":
+        return _test_tribler(url, password, timeout_seconds)
+    if client_type == "blackhole":
+        return _test_blackhole(url)
+    if client_type == "downloadstation":
+        return _test_downloadstation_torrent(url, username, password, timeout_seconds)
+    if client_type == "freeboxdownload":
+        return _test_freebox(url, username, password, timeout_seconds)
     return False, UNSUPPORTED_CLIENT_TYPE_MESSAGE
 
 
@@ -201,7 +242,36 @@ def add_torrent(client_type, url, username=None, password=None, download_url=Non
             exclude_russian,
             expected_update_number,
             expected_version,
+            expected_name,
         )
+    if client_type == "utorrent":
+        return _add_utorrent(
+            url,
+            username,
+            password,
+            download_url,
+            category,
+            download_path,
+            timeout_seconds,
+        )
+    if client_type == "aria2":
+        return _add_aria2(url, password, download_url, download_path, timeout_seconds)
+    if client_type == "rqbit":
+        return _add_rqbit(url, username, password, download_url, timeout_seconds)
+    if client_type == "flood":
+        return _add_flood(url, username, password, download_url, category, timeout_seconds)
+    if client_type == "vuze":
+        return _add_transmission(url, username, password, download_url, torrent_content, category, download_path, timeout_seconds, expected_name, update_only, exclude_russian, expected_update_number, expected_version)
+    if client_type == "hadouken":
+        return _add_hadouken(url, username, password, download_url, timeout_seconds)
+    if client_type == "tribler":
+        return _add_tribler(url, password, download_url, download_path, timeout_seconds)
+    if client_type == "blackhole":
+        return _add_blackhole(download_url, torrent_content, download_path)
+    if client_type == "downloadstation":
+        return _add_downloadstation_torrent(url, username, password, download_url, timeout_seconds)
+    if client_type == "freeboxdownload":
+        return _add_freebox(url, username, password, download_url, timeout_seconds)
     return False, UNSUPPORTED_CLIENT_TYPE_MESSAGE, None
 
 
@@ -215,6 +285,26 @@ def list_completed(client_type, url, username=None, password=None, category=None
         return _list_completed_deluge(url, password, category, download_path, timeout_seconds)
     if client_type == "rtorrent":
         return _list_completed_rtorrent(url, username, password, category, download_path, timeout_seconds)
+    if client_type == "utorrent":
+        return _list_completed_utorrent(url, username, password, category, download_path, timeout_seconds)
+    if client_type == "aria2":
+        return _list_completed_aria2(url, password, download_path, timeout_seconds)
+    if client_type == "rqbit":
+        return _list_completed_rqbit(url, username, password, download_path, timeout_seconds)
+    if client_type == "flood":
+        return _list_completed_flood(url, username, password, category, download_path, timeout_seconds)
+    if client_type == "vuze":
+        return _list_completed_transmission(url, username, password, category, download_path, timeout_seconds)
+    if client_type == "hadouken":
+        return _list_completed_hadouken(url, username, password, category, download_path, timeout_seconds)
+    if client_type == "tribler":
+        return _list_completed_tribler(url, password, category, download_path, timeout_seconds)
+    if client_type == "blackhole":
+        return []
+    if client_type == "downloadstation":
+        return _list_completed_downloadstation_torrent(url, username, password, category, download_path, timeout_seconds)
+    if client_type == "freeboxdownload":
+        return _list_completed_freebox(url, username, password, category, download_path, timeout_seconds)
     return []
 
 
@@ -228,6 +318,26 @@ def list_active(client_type, url, username=None, password=None, category=None, d
         return _list_active_deluge(url, password, category, download_path, timeout_seconds)
     if client_type == "rtorrent":
         return _list_active_rtorrent(url, username, password, category, download_path, timeout_seconds)
+    if client_type == "utorrent":
+        return _list_active_utorrent(url, username, password, category, download_path, timeout_seconds)
+    if client_type == "aria2":
+        return _list_active_aria2(url, password, download_path, timeout_seconds)
+    if client_type == "rqbit":
+        return _list_active_rqbit(url, username, password, download_path, timeout_seconds)
+    if client_type == "flood":
+        return _list_active_flood(url, username, password, category, download_path, timeout_seconds)
+    if client_type == "vuze":
+        return _list_active_transmission(url, username, password, category, download_path, timeout_seconds)
+    if client_type == "hadouken":
+        return _list_active_hadouken(url, username, password, category, download_path, timeout_seconds)
+    if client_type == "tribler":
+        return _list_active_tribler(url, password, category, download_path, timeout_seconds)
+    if client_type == "blackhole":
+        return []
+    if client_type == "downloadstation":
+        return _list_active_downloadstation_torrent(url, username, password, category, download_path, timeout_seconds)
+    if client_type == "freeboxdownload":
+        return _list_active_freebox(url, username, password, category, download_path, timeout_seconds)
     return []
 
 
@@ -243,7 +353,1261 @@ def remove_torrent(client_type, url, torrent_hash, username=None, password=None,
         return _remove_deluge(url, password, torrent_hash, timeout_seconds, delete_files=delete_files)
     if client_type == "rtorrent":
         return _remove_rtorrent(url, torrent_hash, username, password, timeout_seconds, delete_files=delete_files)
+    if client_type == "utorrent":
+        return _remove_utorrent(url, username, password, torrent_hash, timeout_seconds, delete_files=delete_files)
+    if client_type == "aria2":
+        return _remove_aria2(url, password, torrent_hash, timeout_seconds, delete_files=delete_files)
+    if client_type == "rqbit":
+        return _remove_rqbit(url, username, password, torrent_hash, timeout_seconds, delete_files=delete_files)
+    if client_type == "flood":
+        return _remove_flood(url, username, password, torrent_hash, timeout_seconds, delete_files=delete_files)
+    if client_type == "vuze":
+        return _remove_transmission(url, username, password, torrent_hash, timeout_seconds, delete_files=delete_files)
+    if client_type == "hadouken":
+        return _remove_hadouken(url, username, password, torrent_hash, timeout_seconds, delete_files=delete_files)
+    if client_type == "tribler":
+        return _remove_tribler(url, password, torrent_hash, timeout_seconds, delete_files=delete_files)
+    if client_type == "blackhole":
+        return False, "Blackhole client does not support API removals."
+    if client_type == "downloadstation":
+        return _remove_downloadstation_torrent(url, username, password, torrent_hash, timeout_seconds, delete_files=delete_files)
+    if client_type == "freeboxdownload":
+        return _remove_freebox(url, username, password, torrent_hash, timeout_seconds, delete_files=delete_files)
     return False, UNSUPPORTED_CLIENT_TYPE_MESSAGE
+
+
+def _utorrent_gui_base(url):
+    base = str(url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if base.lower().endswith("/gui"):
+        return base
+    return f"{base}/gui"
+
+
+def _utorrent_extract_token(text):
+    match = re.search(r"id=['\"]token['\"][^>]*>([^<]+)<", text or "", flags=re.IGNORECASE)
+    return (match.group(1).strip() if match else "")
+
+
+def _utorrent_request(session, gui_base, token, timeout_seconds, params=None, method="GET"):
+    request_params = dict(params or {})
+    request_params["token"] = token
+    resp = session.request(
+        method,
+        f"{gui_base}/",
+        params=request_params,
+        timeout=timeout_seconds,
+    )
+    return resp
+
+
+def _utorrent_authenticated_session(url, username=None, password=None, timeout_seconds=10):
+    gui_base = _utorrent_gui_base(url)
+    if not gui_base:
+        return None, None, "uTorrent URL is required."
+    session = _new_client_session(username, password)
+    try:
+        token_resp = session.get(f"{gui_base}/token.html", timeout=timeout_seconds)
+    except Exception as exc:
+        return None, None, f"uTorrent request failed: {exc}"
+    if token_resp.status_code == 401:
+        return None, None, "uTorrent authentication failed."
+    if token_resp.status_code != 200:
+        return None, None, f"uTorrent returned {token_resp.status_code}."
+    token = _utorrent_extract_token(token_resp.text)
+    if not token:
+        return None, None, "uTorrent token not found in response."
+    return session, token, None
+
+
+def _utorrent_list_raw(session, gui_base, token, timeout_seconds):
+    resp = _utorrent_request(
+        session,
+        gui_base,
+        token,
+        timeout_seconds,
+        params={"list": 1},
+    )
+    if resp.status_code != 200:
+        return False, f"uTorrent returned {resp.status_code}.", []
+    try:
+        payload = resp.json() or {}
+    except Exception as exc:
+        return False, f"uTorrent JSON parse error: {exc}", []
+    return True, None, (payload.get("torrents") or [])
+
+
+def _parse_utorrent_item(raw, download_path=None):
+    if not isinstance(raw, list) or len(raw) < 3:
+        return None
+    torrent_hash = str(raw[0] or "").strip().lower()
+    status_code = _to_int(raw[1], 0)
+    name = str(raw[2] or "").strip() or torrent_hash
+    size = _to_int(raw[3], 0)
+    progress_permille = _to_float(raw[4], 0.0)
+    progress = max(0.0, min(100.0, progress_permille / 10.0))
+    downloaded = _to_int(raw[5], int(size * (progress / 100.0)))
+    up_speed = _to_int(raw[8], 0)
+    down_speed = _to_int(raw[9], 0)
+    eta = _to_int(raw[10], -1)
+    label = str(raw[11] or "").strip() if len(raw) > 11 else ""
+    peers = _to_int(raw[12], 0) if len(raw) > 12 else 0
+    seeders = _to_int(raw[14], 0) if len(raw) > 14 else 0
+    leechers = _to_int(raw[13], 0) if len(raw) > 13 else 0
+    if status_code & 16:
+        status = "error"
+    elif status_code & 32:
+        status = "paused"
+    elif status_code & 1:
+        status = "downloading"
+    elif status_code & 64:
+        status = "queued"
+    elif progress >= 100.0:
+        status = "completed"
+    else:
+        status = "stalled"
+    content_path = os.path.join(download_path, name) if download_path else name
+    return {
+        "hash": torrent_hash,
+        "name": name,
+        "path": content_path,
+        "status": status,
+        "progress": progress,
+        "size": size,
+        "downloaded": downloaded,
+        "down_speed": down_speed,
+        "up_speed": up_speed,
+        "eta": eta,
+        "peers": peers,
+        "seeders": seeders,
+        "leechers": leechers,
+        "category": label,
+        "protocol": "torrent",
+        "client_type": "utorrent",
+        "_status_code": status_code,
+    }
+
+
+def _test_utorrent(url, username=None, password=None, timeout_seconds=10):
+    session, token, error = _utorrent_authenticated_session(url, username, password, timeout_seconds)
+    if error:
+        return False, error
+    gui_base = _utorrent_gui_base(url)
+    resp = _utorrent_request(
+        session,
+        gui_base,
+        token,
+        timeout_seconds,
+        params={"action": "getsettings"},
+    )
+    if resp.status_code != 200:
+        return False, f"uTorrent returned {resp.status_code}."
+    try:
+        build = (resp.json() or {}).get("build")
+    except Exception:
+        build = None
+    if build:
+        return True, f"uTorrent OK (build {build})."
+    return True, "uTorrent OK."
+
+
+def _add_utorrent(url, username, password, download_url, category, download_path, timeout_seconds):
+    gui_base = _utorrent_gui_base(url)
+    session, token, error = _utorrent_authenticated_session(url, username, password, timeout_seconds)
+    if error:
+        return False, error, None
+    ok, error, before_items = _utorrent_list_raw(session, gui_base, token, timeout_seconds)
+    before_hashes = {str(item[0] or "").strip().lower() for item in before_items if isinstance(item, list) and item}
+    if not ok:
+        before_hashes = set()
+    resp = _utorrent_request(
+        session,
+        gui_base,
+        token,
+        timeout_seconds,
+        params={"action": "add-url", "s": download_url},
+    )
+    if resp.status_code != 200:
+        return False, f"uTorrent returned {resp.status_code}.", None
+    torrent_hash = _extract_magnet_hash(download_url) if download_url else None
+    ok, _err, after_items = _utorrent_list_raw(session, gui_base, token, timeout_seconds)
+    if ok:
+        after_hashes = [str(item[0] or "").strip().lower() for item in after_items if isinstance(item, list) and item]
+        new_hashes = [h for h in after_hashes if h and h not in before_hashes]
+        if new_hashes:
+            torrent_hash = new_hashes[0]
+    managed_label = _build_rtorrent_managed_label(category)
+    if torrent_hash:
+        _utorrent_request(
+            session,
+            gui_base,
+            token,
+            timeout_seconds,
+            params={"action": "setprops", "hash": torrent_hash, "s": "label", "v": managed_label},
+        )
+    _ = download_path
+    return True, "uTorrent accepted torrent.", torrent_hash
+
+
+def _list_utorrent_with_state(url, username, password, category, download_path, timeout_seconds, include_completed):
+    gui_base = _utorrent_gui_base(url)
+    session, token, error = _utorrent_authenticated_session(url, username, password, timeout_seconds)
+    if error:
+        logger.warning("Failed to load uTorrent downloads: %s", error)
+        return []
+    ok, error, rows = _utorrent_list_raw(session, gui_base, token, timeout_seconds)
+    if not ok:
+        logger.warning("Failed to load uTorrent downloads: %s", error)
+        return []
+    expected_label = _build_rtorrent_managed_label(category) if category else None
+    out = []
+    for raw in rows:
+        item = _parse_utorrent_item(raw, download_path=download_path)
+        if not item:
+            continue
+        label = str(item.get("category") or "").strip()
+        if not _is_deluge_managed_label(label):
+            continue
+        if expected_label and label != expected_label:
+            continue
+        is_completed = item.get("progress", 0) >= 100.0
+        if include_completed and not is_completed:
+            continue
+        if not include_completed and is_completed:
+            continue
+        out.append(item)
+    return out
+
+
+def _list_active_utorrent(url, username, password, category, download_path, timeout_seconds):
+    return _list_utorrent_with_state(
+        url,
+        username,
+        password,
+        category,
+        download_path,
+        timeout_seconds,
+        include_completed=False,
+    )
+
+
+def _list_completed_utorrent(url, username, password, category, download_path, timeout_seconds):
+    return _list_utorrent_with_state(
+        url,
+        username,
+        password,
+        category,
+        download_path,
+        timeout_seconds,
+        include_completed=True,
+    )
+
+
+def _remove_utorrent(url, username, password, torrent_hash, timeout_seconds, delete_files=False):
+    gui_base = _utorrent_gui_base(url)
+    session, token, error = _utorrent_authenticated_session(url, username, password, timeout_seconds)
+    if error:
+        return False, error
+    action = "removedata" if delete_files else "remove"
+    resp = _utorrent_request(
+        session,
+        gui_base,
+        token,
+        timeout_seconds,
+        params={"action": action, "hash": str(torrent_hash or "").strip().lower()},
+    )
+    if resp.status_code != 200:
+        return False, f"uTorrent returned {resp.status_code}."
+    return True, "uTorrent remove request sent."
+
+
+def _aria2_rpc_url(url):
+    base = str(url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    parsed = urlparse(base)
+    if not parsed.path or parsed.path == "/":
+        return f"{base}/jsonrpc"
+    return base
+
+
+def _aria2_request(url, secret, method, params=None, timeout_seconds=15):
+    rpc_url = _aria2_rpc_url(url)
+    if not rpc_url:
+        return False, "Aria2 URL is required.", None
+    full_params = []
+    if secret:
+        full_params.append(f"token:{secret}")
+    full_params.extend(list(params or []))
+    payload = {
+        "jsonrpc": "2.0",
+        "id": f"aerofoil-{int(time.time() * 1000)}",
+        "method": method,
+        "params": full_params,
+    }
+    try:
+        resp = requests.post(rpc_url, json=payload, timeout=timeout_seconds, headers={"User-Agent": DOWNLOADS_USER_AGENT})
+    except Exception as exc:
+        return False, f"Aria2 request failed: {exc}", None
+    if resp.status_code != 200:
+        return False, f"Aria2 returned {resp.status_code}.", None
+    try:
+        body = resp.json() or {}
+    except Exception as exc:
+        return False, f"Aria2 JSON parse error: {exc}", None
+    if body.get("error"):
+        msg = body.get("error", {}).get("message") or str(body.get("error"))
+        return False, f"Aria2 error: {msg}", None
+    return True, None, body.get("result")
+
+
+def _test_aria2(url, secret=None, timeout_seconds=10):
+    ok, error, version = _aria2_request(url, secret, "aria2.getVersion", [], timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error
+    version_text = ""
+    if isinstance(version, dict):
+        version_text = str(version.get("version") or "").strip()
+    if version_text:
+        return True, f"Aria2 OK (v{version_text})."
+    return True, "Aria2 OK."
+
+
+def _add_aria2(url, secret, download_url, download_path, timeout_seconds):
+    options = {}
+    if download_path:
+        options["dir"] = download_path
+    ok, error, gid = _aria2_request(
+        url,
+        secret,
+        "aria2.addUri",
+        [[download_url], options],
+        timeout_seconds=timeout_seconds,
+    )
+    if not ok:
+        return False, error, None
+    return True, "Aria2 accepted torrent.", str(gid or "")
+
+
+def _parse_aria2_item(raw):
+    gid = str((raw or {}).get("gid") or "").strip()
+    if not gid:
+        return None
+    total = _to_int((raw or {}).get("totalLength"), 0)
+    completed = _to_int((raw or {}).get("completedLength"), 0)
+    progress = (completed / total * 100.0) if total > 0 else 0.0
+    status = str((raw or {}).get("status") or "").strip().lower()
+    mapped = {
+        "active": "downloading",
+        "waiting": "queued",
+        "paused": "paused",
+        "complete": "completed",
+        "error": "error",
+    }.get(status, status or "unknown")
+    name = str((((raw or {}).get("bittorrent") or {}).get("info") or {}).get("name") or "").strip()
+    if not name:
+        files = (raw or {}).get("files") or []
+        if files and isinstance(files[0], dict):
+            name = os.path.basename(str(files[0].get("path") or "").strip()) or gid
+    if not name:
+        name = gid
+    base_dir = str((raw or {}).get("dir") or "").strip()
+    content_path = os.path.join(base_dir, name) if base_dir else name
+    return {
+        "hash": gid,
+        "name": name,
+        "path": content_path,
+        "status": mapped,
+        "progress": max(0.0, min(100.0, progress)),
+        "size": total,
+        "downloaded": completed,
+        "down_speed": _to_int((raw or {}).get("downloadSpeed"), 0),
+        "up_speed": _to_int((raw or {}).get("uploadSpeed"), 0),
+        "eta": -1,
+        "peers": 0,
+        "seeders": 0,
+        "leechers": 0,
+        "category": None,
+        "protocol": "torrent",
+        "client_type": "aria2",
+    }
+
+
+def _list_aria2(url, secret, download_path, timeout_seconds, include_completed):
+    if not str(download_path or "").strip():
+        return []
+    out = []
+    ok, error, active = _aria2_request(url, secret, "aria2.tellActive", [], timeout_seconds=timeout_seconds)
+    if not ok:
+        logger.warning("Failed to load Aria2 active downloads: %s", error)
+        active = []
+    ok, error, waiting = _aria2_request(url, secret, "aria2.tellWaiting", [0, 1000], timeout_seconds=timeout_seconds)
+    if not ok:
+        waiting = []
+    ok, error, stopped = _aria2_request(url, secret, "aria2.tellStopped", [0, 1000], timeout_seconds=timeout_seconds)
+    if not ok:
+        stopped = []
+    for raw in list(active or []) + list(waiting or []) + list(stopped or []):
+        item = _parse_aria2_item(raw)
+        if not item:
+            continue
+        item_path = str(item.get("path") or "")
+        if not item_path.lower().startswith(str(download_path).lower()):
+            continue
+        is_completed = item.get("status") == "completed" or item.get("progress", 0) >= 100.0
+        if include_completed and not is_completed:
+            continue
+        if not include_completed and is_completed:
+            continue
+        out.append(item)
+    return out
+
+
+def _list_active_aria2(url, secret, download_path, timeout_seconds):
+    return _list_aria2(url, secret, download_path, timeout_seconds, include_completed=False)
+
+
+def _list_completed_aria2(url, secret, download_path, timeout_seconds):
+    return _list_aria2(url, secret, download_path, timeout_seconds, include_completed=True)
+
+
+def _remove_aria2(url, secret, torrent_hash, timeout_seconds, delete_files=False):
+    ok, error, _ = _aria2_request(url, secret, "aria2.remove", [str(torrent_hash or "").strip()], timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error
+    if delete_files:
+        _aria2_request(url, secret, "aria2.removeDownloadResult", [str(torrent_hash or "").strip()], timeout_seconds=timeout_seconds)
+    return True, "Aria2 remove request sent."
+
+
+def _rqbit_request(url, username, password, path="", method="GET", timeout_seconds=15, json_payload=None, data_payload=None):
+    base = str(url or "").strip().rstrip("/")
+    endpoint = f"{base}{path}" if path.startswith("/") else f"{base}/{path}"
+    session = _new_client_session(username, password)
+    try:
+        resp = session.request(method, endpoint, timeout=timeout_seconds, json=json_payload, data=data_payload)
+    except Exception as exc:
+        return False, f"RQBit request failed: {exc}", None
+    if resp.status_code != 200:
+        return False, f"RQBit returned {resp.status_code}.", None
+    if not resp.text:
+        return True, None, {}
+    try:
+        return True, None, (resp.json() or {})
+    except Exception:
+        return True, None, {}
+
+
+def _test_rqbit(url, username=None, password=None, timeout_seconds=10):
+    ok, error, payload = _rqbit_request(url, username, password, path="", timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error
+    version = str((payload or {}).get("version") or "").strip()
+    if version:
+        return True, f"RQBit OK (v{version})."
+    return True, "RQBit OK."
+
+
+def _add_rqbit(url, username, password, download_url, timeout_seconds):
+    ok, error, payload = _rqbit_request(
+        url,
+        username,
+        password,
+        path="/torrents?overwrite=true",
+        method="POST",
+        timeout_seconds=timeout_seconds,
+        data_payload=download_url,
+    )
+    if not ok:
+        return False, error, None
+    details = (payload or {}).get("details") or {}
+    info_hash = str(details.get("info_hash") or details.get("infoHash") or "").strip().lower()
+    return True, "RQBit accepted torrent.", info_hash or _extract_magnet_hash(download_url)
+
+
+def _parse_rqbit_item(raw):
+    info_hash = str((raw or {}).get("info_hash") or "").strip().lower()
+    if not info_hash:
+        return None
+    stats = (raw or {}).get("stats") or {}
+    total = _to_int(stats.get("total_bytes"), 0)
+    done = _to_int(stats.get("progress_bytes"), 0)
+    progress = (done / total * 100.0) if total > 0 else 0.0
+    state = str(stats.get("state") or "").strip().lower()
+    mapped = "downloading"
+    if state in ("paused", "queued", "waiting"):
+        mapped = "paused"
+    elif state in ("error", "invalid"):
+        mapped = "error"
+    elif bool(stats.get("finished")):
+        mapped = "completed"
+    elif state in ("live", "initializing"):
+        mapped = "downloading"
+    out_dir = str((raw or {}).get("output_folder") or "").strip()
+    name = str((raw or {}).get("name") or "").strip() or info_hash
+    live = stats.get("live") or {}
+    down = _to_float(((live.get("download_speed") or {}).get("mbps")), 0.0)
+    up = _to_float(((live.get("upload_speed") or {}).get("mbps")), 0.0)
+    peers = _to_int((((live.get("snapshot") or {}).get("peer_stats") or {}).get("live")), 0)
+    eta = _to_int(((((live.get("time_remaining") or {}).get("duration") or {}).get("secs"))), -1)
+    return {
+        "hash": info_hash,
+        "name": name,
+        "path": os.path.join(out_dir, name) if out_dir else name,
+        "status": mapped,
+        "progress": max(0.0, min(100.0, progress)),
+        "size": total,
+        "downloaded": done,
+        "down_speed": int(down * 1048576),
+        "up_speed": int(up * 1048576),
+        "eta": eta,
+        "peers": peers,
+        "seeders": 0,
+        "leechers": 0,
+        "category": None,
+        "protocol": "torrent",
+        "client_type": "rqbit",
+    }
+
+
+def _list_rqbit(url, username, password, download_path, timeout_seconds, include_completed):
+    if not str(download_path or "").strip():
+        return []
+    ok, error, payload = _rqbit_request(
+        url,
+        username,
+        password,
+        path="/torrents?with_stats=true",
+        timeout_seconds=timeout_seconds,
+    )
+    if not ok:
+        logger.warning("Failed to load RQBit downloads: %s", error)
+        return []
+    out = []
+    for raw in (payload or {}).get("torrents") or []:
+        item = _parse_rqbit_item(raw)
+        if not item:
+            continue
+        if not str(item.get("path") or "").lower().startswith(str(download_path).lower()):
+            continue
+        is_completed = item.get("status") == "completed" or item.get("progress", 0) >= 100.0
+        if include_completed and not is_completed:
+            continue
+        if not include_completed and is_completed:
+            continue
+        out.append(item)
+    return out
+
+
+def _list_active_rqbit(url, username, password, download_path, timeout_seconds):
+    return _list_rqbit(url, username, password, download_path, timeout_seconds, include_completed=False)
+
+
+def _list_completed_rqbit(url, username, password, download_path, timeout_seconds):
+    return _list_rqbit(url, username, password, download_path, timeout_seconds, include_completed=True)
+
+
+def _remove_rqbit(url, username, password, torrent_hash, timeout_seconds, delete_files=False):
+    endpoint = "/delete" if delete_files else "/forget"
+    ok, error, _ = _rqbit_request(
+        url,
+        username,
+        password,
+        path=f"/torrents/{str(torrent_hash or '').strip().lower()}{endpoint}",
+        method="POST",
+        timeout_seconds=timeout_seconds,
+    )
+    if not ok:
+        return False, error
+    return True, "RQBit remove request sent."
+
+
+def _flood_api_base(url):
+    base = str(url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if base.lower().endswith("/api"):
+        return base
+    return f"{base}/api"
+
+
+def _flood_auth(session, api_base, username, password, timeout_seconds):
+    resp = session.post(
+        f"{api_base}/auth/authenticate",
+        json={"username": username or "", "password": password or ""},
+        timeout=timeout_seconds,
+        headers={"User-Agent": DOWNLOADS_USER_AGENT},
+    )
+    if resp.status_code in (401, 403):
+        return False, "Flood authentication failed."
+    if resp.status_code != 200:
+        return False, f"Flood returned {resp.status_code}."
+    return True, None
+
+
+def _flood_request(session, api_base, method, path, timeout_seconds=15, json_payload=None):
+    resp = session.request(
+        method,
+        f"{api_base}{path}",
+        timeout=timeout_seconds,
+        headers={"User-Agent": DOWNLOADS_USER_AGENT, "Content-Type": "application/json"},
+        json=json_payload,
+    )
+    if resp.status_code != 200:
+        return False, f"Flood returned {resp.status_code}.", None
+    if not resp.text:
+        return True, None, {}
+    try:
+        return True, None, (resp.json() or {})
+    except Exception:
+        return True, None, {}
+
+
+def _test_flood(url, username=None, password=None, timeout_seconds=10):
+    api_base = _flood_api_base(url)
+    if not api_base:
+        return False, "Flood URL is required."
+    session = requests.Session()
+    ok, error = _flood_auth(session, api_base, username, password, timeout_seconds)
+    if not ok:
+        return False, error
+    ok, error, _ = _flood_request(session, api_base, "GET", "/auth/verify", timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error
+    return True, "Flood OK."
+
+
+def _add_flood(url, username, password, download_url, category, timeout_seconds):
+    api_base = _flood_api_base(url)
+    session = requests.Session()
+    ok, error = _flood_auth(session, api_base, username, password, timeout_seconds)
+    if not ok:
+        return False, error, None
+    tags = [_build_rtorrent_managed_label(category)]
+    payload = {"urls": [download_url], "tags": tags, "start": True}
+    ok, error, _ = _flood_request(session, api_base, "POST", "/torrents/add-urls", timeout_seconds=timeout_seconds, json_payload=payload)
+    if not ok:
+        return False, error, None
+    torrent_hash = _extract_magnet_hash(download_url) if download_url else None
+    return True, "Flood accepted torrent.", torrent_hash
+
+
+def _parse_flood_item(torrent_hash, raw, download_path=None):
+    status_flags = [str(v).lower() for v in ((raw or {}).get("status") or [])]
+    mapped = "queued"
+    if any("error" in s for s in status_flags):
+        mapped = "error"
+    elif any(("seeding" in s or "complete" in s) for s in status_flags):
+        mapped = "completed"
+    elif any("stopped" in s for s in status_flags):
+        mapped = "paused"
+    elif any("downloading" in s for s in status_flags):
+        mapped = "downloading"
+    size = _to_int((raw or {}).get("sizeBytes"), 0)
+    done = _to_int((raw or {}).get("bytesDone"), 0)
+    progress = (done / size * 100.0) if size > 0 else 0.0
+    directory = str((raw or {}).get("directory") or "").strip()
+    name = str((raw or {}).get("name") or "").strip() or torrent_hash
+    root = download_path or directory
+    path = os.path.join(root, name) if root else name
+    tags = (raw or {}).get("tags") or []
+    category = tags[0] if tags else None
+    return {
+        "hash": str(torrent_hash or "").strip().lower(),
+        "name": name,
+        "path": path,
+        "status": mapped,
+        "progress": max(0.0, min(100.0, progress)),
+        "size": size,
+        "downloaded": done,
+        "down_speed": 0,
+        "up_speed": 0,
+        "eta": _to_int((raw or {}).get("eta"), -1),
+        "peers": 0,
+        "seeders": 0,
+        "leechers": 0,
+        "category": category,
+        "protocol": "torrent",
+        "client_type": "flood",
+    }
+
+
+def _list_flood(url, username, password, category, download_path, timeout_seconds, include_completed):
+    api_base = _flood_api_base(url)
+    session = requests.Session()
+    ok, error = _flood_auth(session, api_base, username, password, timeout_seconds)
+    if not ok:
+        logger.warning("Failed to load Flood downloads: %s", error)
+        return []
+    ok, error, payload = _flood_request(session, api_base, "GET", "/torrents", timeout_seconds=timeout_seconds)
+    if not ok:
+        logger.warning("Failed to load Flood downloads: %s", error)
+        return []
+    torrents = (payload or {}).get("torrents") or {}
+    expected_tag = _build_rtorrent_managed_label(category) if category else None
+    out = []
+    for torrent_hash, raw in torrents.items():
+        tags = [str(v) for v in ((raw or {}).get("tags") or [])]
+        if expected_tag and expected_tag not in tags:
+            continue
+        if not expected_tag and not any(_is_deluge_managed_label(t) for t in tags):
+            continue
+        item = _parse_flood_item(torrent_hash, raw, download_path=download_path)
+        is_completed = item.get("status") == "completed" or item.get("progress", 0) >= 100.0
+        if include_completed and not is_completed:
+            continue
+        if not include_completed and is_completed:
+            continue
+        out.append(item)
+    return out
+
+
+def _list_active_flood(url, username, password, category, download_path, timeout_seconds):
+    return _list_flood(url, username, password, category, download_path, timeout_seconds, include_completed=False)
+
+
+def _list_completed_flood(url, username, password, category, download_path, timeout_seconds):
+    return _list_flood(url, username, password, category, download_path, timeout_seconds, include_completed=True)
+
+
+def _remove_flood(url, username, password, torrent_hash, timeout_seconds, delete_files=False):
+    api_base = _flood_api_base(url)
+    session = requests.Session()
+    ok, error = _flood_auth(session, api_base, username, password, timeout_seconds)
+    if not ok:
+        return False, error
+    payload = {"hashes": [str(torrent_hash or "").strip().lower()], "deleteData": bool(delete_files)}
+    ok, error, _ = _flood_request(
+        session,
+        api_base,
+        "POST",
+        "/torrents/delete",
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if not ok:
+        return False, error
+    return True, "Flood remove request sent."
+
+
+def _hadouken_jsonrpc(url, username, password, method, params=None, timeout_seconds=15):
+    base = str(url or "").strip().rstrip("/")
+    if not base:
+        return False, "Hadouken URL is required.", None
+    endpoint = f"{base}/api"
+    payload = {"jsonrpc": "2.0", "id": f"aerofoil-{int(time.time()*1000)}", "method": method, "params": list(params or [])}
+    session = _new_client_session(username, password)
+    try:
+        resp = session.post(endpoint, json=payload, timeout=timeout_seconds)
+    except Exception as exc:
+        return False, f"Hadouken request failed: {exc}", None
+    if resp.status_code != 200:
+        return False, f"Hadouken returned {resp.status_code}.", None
+    try:
+        data = resp.json() or {}
+    except Exception as exc:
+        return False, f"Hadouken JSON parse error: {exc}", None
+    if data.get("error"):
+        return False, f"Hadouken error: {data.get('error')}", None
+    return True, None, data.get("result")
+
+
+def _test_hadouken(url, username=None, password=None, timeout_seconds=10):
+    ok, error, info = _hadouken_jsonrpc(url, username, password, "core.getSystemInfo", timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error
+    version = ""
+    if isinstance(info, dict):
+        version = str(info.get("version") or "").strip()
+    if version:
+        return True, f"Hadouken OK (v{version})."
+    return True, "Hadouken OK."
+
+
+def _add_hadouken(url, username, password, download_url, timeout_seconds):
+    ok, error, _ = _hadouken_jsonrpc(
+        url,
+        username,
+        password,
+        "webui.addTorrent",
+        ["url", download_url, {"label": AEROFOIL_MANAGED_TAG}],
+        timeout_seconds=timeout_seconds,
+    )
+    if not ok:
+        return False, error, None
+    return True, "Hadouken accepted torrent.", (_extract_magnet_hash(download_url) if download_url else None)
+
+
+def _parse_hadouken_item(raw, download_path=None):
+    if not isinstance(raw, list) or len(raw) < 12:
+        return None
+    info_hash = str(raw[0] or "").strip().lower()
+    if not info_hash:
+        return None
+    state = _to_int(raw[1], 0)
+    name = str(raw[2] or "").strip() or info_hash
+    size = _to_int(raw[3], 0)
+    progress_permille = _to_float(raw[4], 0.0)
+    progress = max(0.0, min(100.0, progress_permille / 10.0))
+    downloaded = _to_int(raw[5], int(size * (progress / 100.0)))
+    down = _to_int(raw[9], 0)
+    label = str(raw[11] or "").strip()
+    save_path = str(raw[26] or "").strip() if len(raw) > 26 else ""
+    path_root = download_path or save_path
+    mapped = "queued"
+    if state & 1:
+        mapped = "downloading"
+    elif state & 32:
+        mapped = "paused"
+    elif progress >= 100.0:
+        mapped = "completed"
+    return {
+        "hash": info_hash,
+        "name": name,
+        "path": os.path.join(path_root, name) if path_root else name,
+        "status": mapped,
+        "progress": progress,
+        "size": size,
+        "downloaded": downloaded,
+        "down_speed": down,
+        "up_speed": 0,
+        "eta": -1,
+        "peers": 0,
+        "seeders": 0,
+        "leechers": 0,
+        "category": label,
+        "protocol": "torrent",
+        "client_type": "hadouken",
+    }
+
+
+def _list_hadouken(url, username, password, category, download_path, timeout_seconds, include_completed):
+    ok, error, payload = _hadouken_jsonrpc(url, username, password, "webui.list", timeout_seconds=timeout_seconds)
+    if not ok:
+        logger.warning("Failed to load Hadouken downloads: %s", error)
+        return []
+    rows = (payload or {}).get("torrents") if isinstance(payload, dict) else payload
+    rows = rows or []
+    out = []
+    for raw in rows:
+        item = _parse_hadouken_item(raw, download_path=download_path)
+        if not item:
+            continue
+        label = str(item.get("category") or "").strip()
+        if category and label != _build_rtorrent_managed_label(category):
+            continue
+        if not category and label and not _is_deluge_managed_label(label):
+            continue
+        is_completed = item.get("progress", 0) >= 100.0 or item.get("status") == "completed"
+        if include_completed and not is_completed:
+            continue
+        if not include_completed and is_completed:
+            continue
+        out.append(item)
+    return out
+
+
+def _list_active_hadouken(url, username, password, category, download_path, timeout_seconds):
+    return _list_hadouken(url, username, password, category, download_path, timeout_seconds, include_completed=False)
+
+
+def _list_completed_hadouken(url, username, password, category, download_path, timeout_seconds):
+    return _list_hadouken(url, username, password, category, download_path, timeout_seconds, include_completed=True)
+
+
+def _remove_hadouken(url, username, password, torrent_hash, timeout_seconds, delete_files=False):
+    method = "webui.perform"
+    action = "removedata" if delete_files else "remove"
+    ok, error, _ = _hadouken_jsonrpc(url, username, password, method, [action, [str(torrent_hash or "").strip().lower()]], timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error
+    return True, "Hadouken remove request sent."
+
+
+def _tribler_base(url):
+    return str(url or "").strip().rstrip("/")
+
+
+def _tribler_request(url, api_key, method, path, timeout_seconds=15, json_payload=None):
+    base = _tribler_base(url)
+    if not base:
+        return False, "Tribler URL is required.", None
+    headers = {"User-Agent": DOWNLOADS_USER_AGENT, "X-Api-Key": api_key or "", "Content-Type": "application/json"}
+    try:
+        resp = requests.request(method, f"{base}{path}", headers=headers, timeout=timeout_seconds, json=json_payload)
+    except Exception as exc:
+        return False, f"Tribler request failed: {exc}", None
+    if resp.status_code == 401:
+        return False, "Tribler authentication failed.", None
+    if resp.status_code not in (200, 201):
+        return False, f"Tribler returned {resp.status_code}.", None
+    if not resp.text:
+        return True, None, {}
+    try:
+        return True, None, (resp.json() or {})
+    except Exception:
+        return True, None, {}
+
+
+def _test_tribler(url, api_key=None, timeout_seconds=10):
+    ok, error, payload = _tribler_request(url, api_key, "GET", "/api/settings", timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error
+    _ = payload
+    return True, "Tribler OK."
+
+
+def _add_tribler(url, api_key, download_url, download_path, timeout_seconds):
+    payload = {"uri": download_url}
+    if download_path:
+        payload["destination"] = download_path
+    ok, error, data = _tribler_request(url, api_key, "PUT", "/api/downloads", timeout_seconds=timeout_seconds, json_payload=payload)
+    if not ok:
+        return False, error, None
+    info_hash = str((data or {}).get("infohash") or "").strip().lower()
+    return True, "Tribler accepted torrent.", info_hash or _extract_magnet_hash(download_url)
+
+
+def _parse_tribler_item(raw, download_path=None):
+    info_hash = str((raw or {}).get("infohash") or "").strip().lower()
+    if not info_hash:
+        return None
+    name = str((raw or {}).get("name") or "").strip() or info_hash
+    progress = max(0.0, min(100.0, _to_float((raw or {}).get("progress"), 0.0) * 100.0))
+    status_raw = str((raw or {}).get("status") or "").strip().lower()
+    mapped = "downloading"
+    if any(k in status_raw for k in ("error", "stopped")):
+        mapped = "paused"
+    elif "seeding" in status_raw or progress >= 100.0:
+        mapped = "completed"
+    size = _to_int((raw or {}).get("size"), 0)
+    downloaded = int(size * progress / 100.0) if size > 0 else _to_int((raw or {}).get("downloaded"), 0)
+    save_path = str((raw or {}).get("destination") or "").strip()
+    root = download_path or save_path
+    return {
+        "hash": info_hash,
+        "name": name,
+        "path": os.path.join(root, name) if root else name,
+        "status": mapped,
+        "progress": progress,
+        "size": size,
+        "downloaded": downloaded,
+        "down_speed": _to_int((raw or {}).get("speed_down"), 0),
+        "up_speed": _to_int((raw or {}).get("speed_up"), 0),
+        "eta": -1,
+        "peers": _to_int((raw or {}).get("num_peers"), 0),
+        "seeders": _to_int((raw or {}).get("num_seeds"), 0),
+        "leechers": 0,
+        "category": AEROFOIL_MANAGED_TAG,
+        "protocol": "torrent",
+        "client_type": "tribler",
+    }
+
+
+def _list_tribler(url, api_key, _category, download_path, timeout_seconds, include_completed):
+    ok, error, payload = _tribler_request(url, api_key, "GET", "/api/downloads", timeout_seconds=timeout_seconds)
+    if not ok:
+        logger.warning("Failed to load Tribler downloads: %s", error)
+        return []
+    out = []
+    for raw in (payload or {}).get("downloads") or []:
+        item = _parse_tribler_item(raw, download_path=download_path)
+        if not item:
+            continue
+        if download_path and not str(item.get("path") or "").lower().startswith(str(download_path).lower()):
+            continue
+        is_completed = item.get("status") == "completed" or item.get("progress", 0) >= 100.0
+        if include_completed and not is_completed:
+            continue
+        if not include_completed and is_completed:
+            continue
+        out.append(item)
+    return out
+
+
+def _list_active_tribler(url, api_key, category, download_path, timeout_seconds):
+    return _list_tribler(url, api_key, category, download_path, timeout_seconds, include_completed=False)
+
+
+def _list_completed_tribler(url, api_key, category, download_path, timeout_seconds):
+    return _list_tribler(url, api_key, category, download_path, timeout_seconds, include_completed=True)
+
+
+def _remove_tribler(url, api_key, torrent_hash, timeout_seconds, delete_files=False):
+    payload = {"remove_data": bool(delete_files)}
+    ok, error, _ = _tribler_request(
+        url,
+        api_key,
+        "DELETE",
+        f"/api/downloads/{str(torrent_hash or '').strip().lower()}",
+        timeout_seconds=timeout_seconds,
+        json_payload=payload,
+    )
+    if not ok:
+        return False, error
+    return True, "Tribler remove request sent."
+
+
+def _test_blackhole(path):
+    folder = str(path or "").strip()
+    if not folder:
+        return False, "Blackhole watch folder is required in URL field."
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except Exception as exc:
+        return False, f"Blackhole folder error: {exc}"
+    if not os.path.isdir(folder):
+        return False, "Blackhole folder is not a directory."
+    return True, f"Blackhole OK ({folder})."
+
+
+def _add_blackhole(download_url, torrent_content, download_path):
+    folder = str(download_path or "").strip()
+    if not folder:
+        return False, "Blackhole download path is required.", None
+    os.makedirs(folder, exist_ok=True)
+    stamp = int(time.time() * 1000)
+    if torrent_content:
+        target = os.path.join(folder, f"aerofoil_{stamp}.torrent")
+        with open(target, "wb") as handle:
+            handle.write(torrent_content)
+        return True, "Blackhole wrote torrent file.", os.path.basename(target)
+    if str(download_url or "").startswith("magnet:"):
+        target = os.path.join(folder, f"aerofoil_{stamp}.magnet")
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(download_url)
+        return True, "Blackhole wrote magnet file.", os.path.basename(target)
+    target = os.path.join(folder, f"aerofoil_{stamp}.url")
+    with open(target, "w", encoding="utf-8") as handle:
+        handle.write(str(download_url or ""))
+    return True, "Blackhole wrote URL file.", os.path.basename(target)
+
+
+def _test_downloadstation_torrent(url, username=None, password=None, timeout_seconds=10):
+    from app.downloads.usenet_client import test_downloadstation
+    return test_downloadstation(url, username=username, password=password, timeout_seconds=timeout_seconds)
+
+
+def _add_downloadstation_torrent(url, username, password, download_url, timeout_seconds):
+    from app.downloads.usenet_client import _downloadstation_auth, _downloadstation_task
+    ok, error, sid = _downloadstation_auth(url, username, password, timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error, None
+    ok, error, _ = _downloadstation_task(url, sid, "create", timeout_seconds=timeout_seconds, extra={"uri": download_url})
+    if not ok:
+        return False, error, None
+    return True, "Download Station accepted torrent.", f"ds-{int(time.time()*1000)}"
+
+
+def _list_downloadstation_torrent(url, username, password, category, download_path, timeout_seconds, include_completed):
+    from app.downloads.usenet_client import _downloadstation_auth, _downloadstation_task
+    _ = category
+    ok, error, sid = _downloadstation_auth(url, username, password, timeout_seconds=timeout_seconds)
+    if not ok:
+        logger.warning("Failed to load Download Station torrents: %s", error)
+        return []
+    ok, error, data = _downloadstation_task(url, sid, "list", timeout_seconds=timeout_seconds, extra={"additional": "detail,transfer"})
+    if not ok:
+        logger.warning("Failed to load Download Station torrents: %s", error)
+        return []
+    out = []
+    for item in (data.get("tasks") or []):
+        if str(item.get("type") or "").lower() != "bt":
+            continue
+        status_raw = str(item.get("status") or "").lower()
+        size = _to_int(item.get("size"), 0)
+        transfer = (item.get("additional") or {}).get("transfer") or {}
+        downloaded = _to_int(transfer.get("size_downloaded"), 0)
+        progress = (downloaded / size * 100.0) if size > 0 else 0.0
+        mapped = "downloading"
+        if status_raw in ("finished", "seeding"):
+            mapped = "completed"
+        elif status_raw in ("paused", "waiting"):
+            mapped = "paused"
+        elif status_raw in ("error",):
+            mapped = "error"
+        path = str(((item.get("additional") or {}).get("detail") or {}).get("destination") or "")
+        name = str(item.get("title") or item.get("id") or "")
+        full_path = os.path.join(path, name) if path else name
+        if download_path and not full_path.lower().startswith(str(download_path).lower()):
+            continue
+        is_completed = mapped == "completed" or progress >= 100.0
+        if include_completed and not is_completed:
+            continue
+        if not include_completed and is_completed:
+            continue
+        out.append({
+            "hash": str(item.get("id") or ""),
+            "name": name,
+            "path": full_path,
+            "status": mapped,
+            "progress": progress,
+            "size": size,
+            "downloaded": downloaded,
+            "down_speed": _to_int(transfer.get("speed_download"), 0),
+            "up_speed": _to_int(transfer.get("speed_upload"), 0),
+            "eta": -1,
+            "peers": 0,
+            "seeders": 0,
+            "leechers": 0,
+            "category": None,
+            "protocol": "torrent",
+            "client_type": "downloadstation",
+        })
+    return out
+
+
+def _list_active_downloadstation_torrent(url, username, password, category, download_path, timeout_seconds):
+    return _list_downloadstation_torrent(url, username, password, category, download_path, timeout_seconds, include_completed=False)
+
+
+def _list_completed_downloadstation_torrent(url, username, password, category, download_path, timeout_seconds):
+    return _list_downloadstation_torrent(url, username, password, category, download_path, timeout_seconds, include_completed=True)
+
+
+def _remove_downloadstation_torrent(url, username, password, torrent_hash, timeout_seconds, delete_files=False):
+    from app.downloads.usenet_client import _downloadstation_auth, _downloadstation_task
+    _ = delete_files
+    ok, error, sid = _downloadstation_auth(url, username, password, timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error
+    ok, error, _ = _downloadstation_task(url, sid, "delete", timeout_seconds=timeout_seconds, extra={"id": torrent_hash, "force_complete": "false"})
+    if not ok:
+        return False, error
+    return True, "Download Station task removed."
+
+
+def _freebox_base(url):
+    return str(url or "").strip().rstrip("/")
+
+
+def _freebox_request(url, app_id, app_token, path, method="GET", timeout_seconds=15, json_payload=None, data_payload=None, session_token=None):
+    base = _freebox_base(url)
+    headers = {"User-Agent": DOWNLOADS_USER_AGENT, "Content-Type": "application/json"}
+    if session_token:
+        headers["X-Fbx-App-Auth"] = session_token
+    resp = requests.request(method, f"{base}{path}", headers=headers, timeout=timeout_seconds, json=json_payload, data=data_payload)
+    if resp.status_code != 200:
+        return False, f"Freebox returned {resp.status_code}.", None
+    body = resp.json() if resp.content else {}
+    if not body.get("success"):
+        return False, f"Freebox API error: {body.get('msg') or body.get('error_code') or 'request failed'}", None
+    return True, None, body.get("result")
+
+
+def _freebox_session(url, app_id, app_token, timeout_seconds=10):
+    ok, error, login = _freebox_request(url, app_id, app_token, "/login", timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error, None
+    challenge = str((login or {}).get("challenge") or "")
+    if not challenge:
+        return False, "Freebox challenge not found.", None
+    secret = str(app_token or "").encode("ascii", errors="ignore")
+    passwd = hmac.new(secret, challenge.encode("ascii", errors="ignore"), hashlib.sha1).hexdigest()
+    payload = {"app_id": app_id or "", "password": passwd}
+    ok, error, session = _freebox_request(url, app_id, app_token, "/login/session", method="POST", timeout_seconds=timeout_seconds, json_payload=payload)
+    if not ok:
+        return False, error, None
+    token = str((session or {}).get("session_token") or "")
+    if not token:
+        return False, "Freebox session token not found.", None
+    return True, None, token
+
+
+def _test_freebox(url, app_id=None, app_token=None, timeout_seconds=10):
+    ok, error, token = _freebox_session(url, app_id, app_token, timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error
+    ok, error, _ = _freebox_request(url, app_id, app_token, "/downloads/", timeout_seconds=timeout_seconds, session_token=token)
+    if not ok:
+        return False, error
+    return True, "Freebox Download OK."
+
+
+def _add_freebox(url, app_id, app_token, download_url, timeout_seconds):
+    ok, error, token = _freebox_session(url, app_id, app_token, timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error, None
+    form = {"download_url": download_url}
+    ok, error, result = _freebox_request(url, app_id, app_token, "/downloads/add", method="POST", timeout_seconds=timeout_seconds, data_payload=form, session_token=token)
+    if not ok:
+        return False, error, None
+    return True, "Freebox accepted torrent.", str((result or {}).get("id") or "")
+
+
+def _list_freebox(url, app_id, app_token, category, download_path, timeout_seconds, include_completed):
+    _ = category
+    ok, error, token = _freebox_session(url, app_id, app_token, timeout_seconds=timeout_seconds)
+    if not ok:
+        logger.warning("Failed to load Freebox downloads: %s", error)
+        return []
+    ok, error, tasks = _freebox_request(url, app_id, app_token, "/downloads/", timeout_seconds=timeout_seconds, session_token=token)
+    if not ok:
+        logger.warning("Failed to load Freebox downloads: %s", error)
+        return []
+    out = []
+    for item in tasks or []:
+        if str(item.get("type") or "").lower() != "bt":
+            continue
+        status_raw = str(item.get("status") or "").lower()
+        mapped = "downloading"
+        if status_raw in ("done", "seeding"):
+            mapped = "completed"
+        elif status_raw in ("stopped", "stopping", "queued"):
+            mapped = "paused"
+        elif status_raw in ("error",):
+            mapped = "error"
+        size = _to_int(item.get("size"), 0)
+        progress = _to_float(item.get("rx_pct"), 0.0) / 100.0
+        name = str(item.get("name") or item.get("id") or "")
+        directory = str(item.get("download_dir") or "")
+        full_path = os.path.join(directory, name) if directory else name
+        if download_path and not full_path.lower().startswith(str(download_path).lower()):
+            continue
+        is_completed = mapped == "completed" or progress >= 100.0
+        if include_completed and not is_completed:
+            continue
+        if not include_completed and is_completed:
+            continue
+        out.append({
+            "hash": str(item.get("id") or ""),
+            "name": name,
+            "path": full_path,
+            "status": mapped,
+            "progress": max(0.0, min(100.0, progress)),
+            "size": size,
+            "downloaded": int(size * (progress / 100.0)) if size > 0 else 0,
+            "down_speed": _to_int(item.get("rx_bytes"), 0),
+            "up_speed": _to_int(item.get("tx_bytes"), 0),
+            "eta": _to_int(item.get("eta"), -1),
+            "peers": 0,
+            "seeders": 0,
+            "leechers": 0,
+            "category": None,
+            "protocol": "torrent",
+            "client_type": "freeboxdownload",
+        })
+    return out
+
+
+def _list_active_freebox(url, app_id, app_token, category, download_path, timeout_seconds):
+    return _list_freebox(url, app_id, app_token, category, download_path, timeout_seconds, include_completed=False)
+
+
+def _list_completed_freebox(url, app_id, app_token, category, download_path, timeout_seconds):
+    return _list_freebox(url, app_id, app_token, category, download_path, timeout_seconds, include_completed=True)
+
+
+def _remove_freebox(url, app_id, app_token, torrent_hash, timeout_seconds, delete_files=False):
+    ok, error, token = _freebox_session(url, app_id, app_token, timeout_seconds=timeout_seconds)
+    if not ok:
+        return False, error
+    suffix = "/erase" if delete_files else ""
+    ok, error, _ = _freebox_request(url, app_id, app_token, f"/downloads/{torrent_hash}{suffix}", method="DELETE", timeout_seconds=timeout_seconds, session_token=token)
+    if not ok:
+        return False, error
+    return True, "Freebox task removed."
 
 
 def _test_qbittorrent(url, username=None, password=None, timeout_seconds=10):
@@ -254,7 +1618,10 @@ def _test_qbittorrent(url, username=None, password=None, timeout_seconds=10):
     version_resp = session.get(f"{base}/api/v2/app/version", timeout=timeout_seconds)
     if version_resp.status_code != 200:
         return False, f"qBittorrent returned {version_resp.status_code}."
-    return True, f"qBittorrent OK (v{version_resp.text.strip()})."
+    version_text = str(version_resp.text or "").strip()
+    if version_text.lower().startswith("v"):
+        return True, f"qBittorrent OK ({version_text})."
+    return True, f"qBittorrent OK (v{version_text})."
 
 
 def _test_transmission(url, username=None, password=None, timeout_seconds=10):
@@ -416,6 +1783,7 @@ def _add_rtorrent(
     exclude_russian,
     expected_update_number,
     expected_version,
+    expected_name=None,
 ):
     preflight_files = None
     if update_only:
@@ -429,10 +1797,12 @@ def _add_rtorrent(
             return False, TORRENT_UPDATE_SELECTION_ERROR, None
 
     managed_label = _build_rtorrent_managed_label(category)
-    ok, error, _result = _rtorrent_xmlrpc(
+    add_args = ["", download_url]
+    add_args.extend(_build_rtorrent_add_commands(category, download_path))
+    ok, error, add_result = _rtorrent_xmlrpc(
         url,
         "load.start_verbose",
-        ["", download_url],
+        add_args,
         timeout_seconds=timeout_seconds,
         username=username,
         password=password,
@@ -441,6 +1811,16 @@ def _add_rtorrent(
         return False, error or "rTorrent add failed.", None
 
     torrent_hash = _compute_torrent_infohash(download_url, timeout_seconds) or _extract_magnet_hash(download_url)
+    if not torrent_hash:
+        torrent_hash = _extract_rtorrent_hash(add_result)
+    if not torrent_hash:
+        torrent_hash = _find_recent_rtorrent_hash_by_name(
+            url,
+            expected_name,
+            username,
+            password,
+            timeout_seconds,
+        )
     if update_only and torrent_hash:
         _rtorrent_xmlrpc(url, "d.stop", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
     if torrent_hash:
@@ -507,7 +1887,7 @@ def _add_qbittorrent(url, username, password, download_url, torrent_content, cat
     if update_only and infohash_v1:
         logger.info("Computed torrent infohash_v1: %s", infohash_v1)
     resp = session.post(f"{base}/api/v2/torrents/add", data=data, files=files, timeout=timeout_seconds)
-    if resp.status_code != 200:
+    if resp.status_code not in (200, 202):
         return False, f"qBittorrent returned {resp.status_code}.", None
     add_response_text = str(resp.text or "").strip()
     if add_response_text and add_response_text.lower() not in ("ok", "ok."):
@@ -867,7 +2247,16 @@ def _list_active_deluge(url, password, category, download_path, timeout_seconds)
 
 
 def _list_rtorrent_with_state(url, username, password, category, download_path, timeout_seconds, include_completed):
-    ok, error, hashes = _rtorrent_xmlrpc(url, "download_list", [], timeout_seconds=timeout_seconds, username=username, password=password)
+    session = _new_client_session(username, password)
+    ok, error, hashes = _rtorrent_xmlrpc(
+        url,
+        "download_list",
+        [],
+        timeout_seconds=timeout_seconds,
+        username=username,
+        password=password,
+        session=session,
+    )
     if not ok or not isinstance(hashes, list):
         return []
 
@@ -877,25 +2266,73 @@ def _list_rtorrent_with_state(url, username, password, category, download_path, 
         torrent_hash = str(torrent_hash or "").strip()
         if not torrent_hash:
             continue
-        ok_label, _, label = _rtorrent_xmlrpc(url, "d.custom1", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
+        ok_label, _, label = _rtorrent_xmlrpc(
+            url,
+            "d.custom1",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
         if not ok_label or not _is_deluge_managed_label(label):
             continue
         if expected_label and str(label or "").strip().lower() != expected_label.lower():
-            continue
+            # Keep managed torrents even if the current category config changed after add.
+            raw_label = str(label or "").strip().lower()
+            if raw_label not in MANAGED_TAGS:
+                continue
 
-        ok_name, _, name = _rtorrent_xmlrpc(url, "d.name", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
-        ok_dir, _, directory = _rtorrent_xmlrpc(url, "d.directory", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
+        ok_name, _, name = _rtorrent_xmlrpc(
+            url,
+            "d.name",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
+        ok_dir, _, directory = _rtorrent_xmlrpc(
+            url,
+            "d.directory",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
+        ok_base_path, _, base_path = _rtorrent_xmlrpc(
+            url,
+            "d.base_path",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
         if not ok_name:
             name = torrent_hash
         if not ok_dir:
             directory = ""
         name = str(name or "").strip()
         directory = str(directory or "").strip()
-        content_path = os.path.join(directory.rstrip("/\\"), name) if directory and name else None
+        base_path_text = str(base_path or "").strip() if ok_base_path else ""
+        if base_path_text:
+            content_path = base_path_text
+        else:
+            content_path = os.path.join(directory.rstrip("/\\"), name) if directory and name else None
         if download_path and not _is_path_within(content_path or directory, download_path):
             continue
 
-        ok_complete, _, complete = _rtorrent_xmlrpc(url, "d.complete", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
+        ok_complete, _, complete = _rtorrent_xmlrpc(
+            url,
+            "d.complete",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
         is_completed = bool(_to_int(complete, 0)) if ok_complete else False
         if include_completed != is_completed:
             continue
@@ -904,11 +2341,51 @@ def _list_rtorrent_with_state(url, username, password, category, download_path, 
             filtered.append({"hash": torrent_hash, "path": content_path, "name": name})
             continue
 
-        ok_bytes_done, _, bytes_done = _rtorrent_xmlrpc(url, "d.bytes_done", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
-        ok_size, _, size_bytes = _rtorrent_xmlrpc(url, "d.size_bytes", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
-        ok_down, _, down_speed = _rtorrent_xmlrpc(url, "d.down.rate", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
-        ok_up, _, up_speed = _rtorrent_xmlrpc(url, "d.up.rate", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
-        ok_peers, _, peers = _rtorrent_xmlrpc(url, "d.peers_connected", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
+        ok_bytes_done, _, bytes_done = _rtorrent_xmlrpc(
+            url,
+            "d.bytes_done",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
+        ok_size, _, size_bytes = _rtorrent_xmlrpc(
+            url,
+            "d.size_bytes",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
+        ok_down, _, down_speed = _rtorrent_xmlrpc(
+            url,
+            "d.down.rate",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
+        ok_up, _, up_speed = _rtorrent_xmlrpc(
+            url,
+            "d.up.rate",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
+        ok_peers, _, peers = _rtorrent_xmlrpc(
+            url,
+            "d.peers_connected",
+            [torrent_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+            session=session,
+        )
 
         total_size = _to_int(size_bytes, 0) if ok_size else 0
         downloaded = _to_int(bytes_done, 0) if ok_bytes_done else 0
@@ -1144,9 +2621,11 @@ def _remove_deluge(url, password, torrent_hash, timeout_seconds, delete_files=Fa
 
 
 def _remove_rtorrent(url, torrent_hash, username, password, timeout_seconds, delete_files=False):
-    _rtorrent_xmlrpc(url, "d.stop", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
-    method = "d.erase" if delete_files else "d.close"
-    ok, error, _result = _rtorrent_xmlrpc(url, method, [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
+    normalized_hash = str(torrent_hash or "").strip().lower()
+    if not normalized_hash:
+        return False, "Torrent hash is required."
+    _rtorrent_xmlrpc(url, "d.stop", [normalized_hash], timeout_seconds=timeout_seconds, username=username, password=password)
+    ok, error, _result = _rtorrent_xmlrpc(url, "d.erase", [normalized_hash], timeout_seconds=timeout_seconds, username=username, password=password)
     if not ok:
         return False, error or "rTorrent returned an error."
     return True, "rTorrent removed torrent."
@@ -1161,6 +2640,62 @@ def _extract_magnet_hash(magnet_url):
     match = re.search(r"xt=urn:btih:([A-Z2-7]+)", magnet_url)
     if match:
         return match.group(1).lower()
+    return None
+
+
+def _extract_rtorrent_hash(value):
+    text = str(value or "").strip()
+    if re.fullmatch(r"[A-Fa-f0-9]{40}", text):
+        return text.lower()
+    return None
+
+
+def _find_recent_rtorrent_hash_by_name(url, expected_name, username, password, timeout_seconds):
+    expected = str(expected_name or "").strip().lower()
+    if not expected:
+        return None
+    expected_terms = [term for term in re.split(r"\s+", expected) if len(term) > 2]
+    if not expected_terms:
+        expected_terms = [expected]
+
+    ok, _error, hashes = _rtorrent_xmlrpc(
+        url,
+        "download_list",
+        [],
+        timeout_seconds=timeout_seconds,
+        username=username,
+        password=password,
+    )
+    if not ok or not isinstance(hashes, list):
+        return None
+
+    best_hash = None
+    best_score = -1
+    for torrent_hash in hashes:
+        normalized_hash = _extract_rtorrent_hash(torrent_hash)
+        if not normalized_hash:
+            continue
+        ok_name, _name_error, name = _rtorrent_xmlrpc(
+            url,
+            "d.name",
+            [normalized_hash],
+            timeout_seconds=timeout_seconds,
+            username=username,
+            password=password,
+        )
+        if not ok_name:
+            continue
+        name_text = str(name or "").strip().lower()
+        if not name_text:
+            continue
+        if expected in name_text:
+            return normalized_hash
+        score = sum(1 for term in expected_terms if term in name_text)
+        if score > best_score:
+            best_score = score
+            best_hash = normalized_hash
+    if best_score > 0:
+        return best_hash
     return None
 
 
