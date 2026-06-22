@@ -161,6 +161,12 @@ DEFAULT_SETTINGS = {
         "clientCertKey": "-----BEGIN PRIVATE KEY-----",
         "host": "",
         "hauth": "",
+    },
+    "content_filter": {
+        # When a user has an age cap (max_rating) set, also hide/block titles
+        # that have no known rating (homebrew, unidentified files, or titles
+        # missing from TitleDB). True = fail-closed (safest for child accounts).
+        "block_unrated": True,
     }
 }
 
@@ -242,3 +248,21 @@ APP_TYPE_MAP = {
     129: APP_TYPE_UPD,
     130: APP_TYPE_DLC,
 }
+
+# ESRB content rating scale. The numeric "age" matches TitleDB's `rating` field
+# (the eShop minimum-age recommendation, e.g. Breath of the Wild = 10 = E10+).
+# Filtering compares numerically, so it also works for PEGI-region TitleDB data;
+# the labels assume the US (ESRB) region.
+ESRB_RATINGS = [
+    {"code": "E", "age": 0, "label": "Everyone"},
+    {"code": "E10", "age": 10, "label": "Everyone 10+"},
+    {"code": "T", "age": 13, "label": "Teen"},
+    {"code": "M", "age": 17, "label": "Mature 17+"},
+    {"code": "AO", "age": 18, "label": "Adults Only 18+"},
+]
+ESRB_AGE_BY_CODE = {item["code"]: item["age"] for item in ESRB_RATINGS}
+ESRB_VALID_AGES = [item["age"] for item in ESRB_RATINGS]
+
+# Bump to force a one-time rebuild of the titles SQLite index when its on-disk
+# schema changes (the `rating` column was added in this version).
+TITLES_INDEX_SCHEMA_VERSION = 'rating-v1'

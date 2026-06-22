@@ -719,6 +719,15 @@
                                     Prioritize throughput by skipping per-chunk transfer tracking. Activity live byte counters and exact transfer byte accounting may be less precise.
                                 </div>
                             </div>
+                            <div class="form-check">
+                                <input type="checkbox" class="form-check-input" id="blockUnratedCheck"
+                                    aria-describedby="blockUnratedCheckHelp" onChange="submitContentFilterSettings()">
+                                <label class="form-check-label" for="blockUnratedCheck">Hide unrated titles from age-capped users</label>
+                                <div id="blockUnratedCheckHelp" class="form-text">
+                                    When a user has a max rating set, also hide titles with no known ESRB rating
+                                    (homebrew, unidentified files, or titles missing from TitleDB). Recommended for child accounts.
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1911,6 +1920,22 @@
         });
     }
 
+    function submitContentFilterSettings() {
+        const data = {
+            block_unrated: getCheckboxStatus("blockUnratedCheck"),
+        };
+        $.ajax({
+            url: "/api/settings/content-filter",
+            type: 'POST',
+            data: JSON.stringify(data),
+            contentType: "application/json",
+            error: function (xhr) {
+                const result = xhr && xhr.responseJSON ? xhr.responseJSON : {};
+                renderSettingsErrors(result['errors']);
+            }
+        });
+    }
+
     function splitTerms(value) {
         if (!value) {
             return [];
@@ -2990,6 +3015,8 @@
             $("#encryptShopCheck").prop("checked", shopSettings['encrypt']);
             $("#tinfoilOnlyModeCheck").prop("checked", !!shopSettings['tinfoil_only_mode']);
             $("#fastTransferModeCheck").prop("checked", !!shopSettings['fast_transfer_mode']);
+            const contentFilterSettings = result['content_filter'] || {};
+            $("#blockUnratedCheck").prop("checked", contentFilterSettings['block_unrated'] !== false);
             syncTinfoilOnlyModeControls();
             setInputVal("shopPublicKeyInput", shopSettings['public_key'] || '');
             securitySettings = result['security'] || {};

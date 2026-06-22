@@ -80,6 +80,18 @@
                                     </div>
                                 </div>
                             </div>
+                            <div class="col-md-4">
+                                <label for="selectNewUserMaxRating" class="form-label">Max rating</label>
+                                <select class="form-select" id="selectNewUserMaxRating">
+                                    <option value="" selected>No limit</option>
+                                    <option value="0">Everyone (E)</option>
+                                    <option value="10">Everyone 10+ (E10+)</option>
+                                    <option value="13">Teen (T)</option>
+                                    <option value="17">Mature 17+ (M)</option>
+                                    <option value="18">Adults Only 18+ (AO)</option>
+                                </select>
+                                <div class="form-text">Hide titles above this ESRB rating from this user's shop.</div>
+                            </div>
                             <div class="col-12">
                                 <button type="button" class="btn btn-primary" onClick='submitNewUser()'>Create user</button>
                             </div>
@@ -162,6 +174,18 @@
                                             <label class="form-check-label" for="checkboxEditUserAdminAccess">Admin</label>
                                         </div>
                                     </div>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="editUserMaxRatingSelect" class="form-label">Max rating</label>
+                                    <select class="form-select" id="editUserMaxRatingSelect">
+                                        <option value="">No limit</option>
+                                        <option value="0">Everyone (E)</option>
+                                        <option value="10">Everyone 10+ (E10+)</option>
+                                        <option value="13">Teen (T)</option>
+                                        <option value="17">Mature 17+ (M)</option>
+                                        <option value="18">Adults Only 18+ (AO)</option>
+                                    </select>
+                                    <div class="form-text">Hide titles above this ESRB rating from this user's shop.</div>
                                 </div>
                             </div>
                             <div class="modal-footer">
@@ -445,6 +469,14 @@
         return (user['admin_access'] ? 4 : 0) + (user['shop_access'] ? 2 : 0) + (user['backup_access'] ? 1 : 0);
     }
 
+    const RATING_LABELS = { '0': 'E', '10': 'E10+', '13': 'T', '17': 'M', '18': 'AO' };
+    function _ratingLabel(value) {
+        if (value === null || value === undefined || value === '') {
+            return '';
+        }
+        return RATING_LABELS[String(value)] || ('age ' + value);
+    }
+
     function _filteredUsers() {
         const q = (getInputVal('userSearchInput') || '').trim().toLowerCase();
         let users = allUsers || [];
@@ -653,6 +685,10 @@
             if (!badges) {
                 badges = '<span class="badge text-bg-secondary">None</span>';
             }
+            const maxRatingLabel = _ratingLabel(user['max_rating']);
+            if (maxRatingLabel) {
+                badges += '<span class="badge text-bg-dark ms-1">≤ ' + _escapeHtml(maxRatingLabel) + '</span>';
+            }
 
             const username = _escapeHtml(user['user']);
             const uidValue = _escapeHtml(user['client_uid'] || '-');
@@ -678,7 +714,8 @@
                 + '<div class="user-actions">'
                 + '<button type="button" class="btn btn-outline-info btn-sm" data-bs-toggle="modal" data-bs-target="#editUserModal" data-bs-title="Modify user" data-bs-placement="top"'
                 + ' data-bs-id="' + user['id'] + '" data-bs-user="' + _escapeHtml(user['user']) + '"'
-                + ' data-bs-admin="' + user['admin_access'] + '" data-bs-shop="' + user['shop_access'] + '" data-bs-backup="' + user['backup_access'] + '">'
+                + ' data-bs-admin="' + user['admin_access'] + '" data-bs-shop="' + user['shop_access'] + '" data-bs-backup="' + user['backup_access'] + '"'
+                + ' data-bs-max-rating="' + (user['max_rating'] === null || user['max_rating'] === undefined ? '' : user['max_rating']) + '">'
                 + '<i class="bi bi-pencil-square"></i></button>'
                 + '<button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#userHistoryModal" data-bs-title="View history" data-bs-placement="top"'
                 + ' data-bs-id="' + user['id'] + '" data-bs-user="' + _escapeHtml(user['user']) + '">'
@@ -865,12 +902,16 @@
             return;
         }
 
+        const maxRatingRaw = getInputVal("selectNewUserMaxRating");
+        const max_rating = (maxRatingRaw === '' || maxRatingRaw === null || maxRatingRaw === undefined) ? null : parseInt(maxRatingRaw, 10);
+
         data = {
             user: user,
             password: password,
             shop_access: shop_access,
             backup_access: backup_access,
             admin_access: admin_access,
+            max_rating: max_rating,
         }
 
         $.ajax({
@@ -886,6 +927,7 @@
                     }
                     setInputVal("inputNewUser", "")
                     setInputVal("inputNewUserPassword", "")
+                    setInputVal("selectNewUserMaxRating", "")
                     fillUserTable();
                 }
             }
@@ -903,8 +945,10 @@
             const adminAccess = button.getAttribute('data-bs-admin') === 'true'
             const shopAccess = button.getAttribute('data-bs-shop') === 'true'
             const backupAccess = button.getAttribute('data-bs-backup') === 'true'
+            const maxRating = button.getAttribute('data-bs-max-rating')
 
             setInputVal("editUserNameInput", editOriginalUser)
+            setInputVal("editUserMaxRatingSelect", (maxRating === null || maxRating === undefined) ? '' : maxRating)
             $('#editUserModalLabel').text('Modify user');
             $('#submitModifyUserBtn').text('Save');
             $("#checkboxEditUserAdminAccess").prop("checked", adminAccess)
@@ -954,12 +998,16 @@
             return;
         }
 
+        const maxRatingRaw = getInputVal("editUserMaxRatingSelect");
+        const max_rating = (maxRatingRaw === '' || maxRatingRaw === null || maxRatingRaw === undefined) ? null : parseInt(maxRatingRaw, 10);
+
         data = {
             user_id: editUserId,
             user: user,
             shop_access: shop_access,
             backup_access: backup_access,
             admin_access: admin_access,
+            max_rating: max_rating,
         }
 
         $.ajax({

@@ -204,7 +204,9 @@ def _versions_source_signature(path):
     return f"{int(stat.st_size)}:{int(mtime_ns)}"
 
 def _titles_sources_signature(paths):
-    parts = []
+    # Prefix with the index schema version so a column change forces a one-time
+    # rebuild even when the underlying source files are unchanged.
+    parts = [f"schema:{TITLES_INDEX_SCHEMA_VERSION}"]
     for path in (paths or []):
         parts.append(f"{os.path.basename(path)}:{_versions_source_signature(path)}")
     return "|".join(parts)
@@ -244,6 +246,20 @@ def _release_process_memory():
             _malloc_trim(0)
         except Exception:
             pass
+
+def _coerce_rating(value):
+    """Coerce a TitleDB `rating` value to an int age, or None if unknown.
+
+    TitleDB stores the eShop minimum-age recommendation as an integer. Negative
+    sentinels (e.g. -1) and blanks are treated as "unrated".
+    """
+    if value is None:
+        return None
+    try:
+        rating = int(value)
+    except (TypeError, ValueError):
+        return None
+    return rating if rating >= 0 else None
 
 def _normalize_title_search_text(value):
     text = str(value or '')
@@ -529,6 +545,7 @@ def _ensure_titles_index_from_sources(source_files, index_file, log_label='title
                 "category TEXT, "
                 "nsu_id TEXT, "
                 "description TEXT, "
+                "rating INTEGER, "
                 "search_hay TEXT, "
                 "sort_order INTEGER NOT NULL)"
             )
@@ -567,6 +584,7 @@ def _ensure_titles_index_from_sources(source_files, index_file, log_label='title
                 "category TEXT, "
                 "nsu_id TEXT, "
                 "description TEXT, "
+                "rating INTEGER, "
                 "search_hay TEXT, "
                 "sort_order INTEGER NOT NULL)"
             )
@@ -595,6 +613,7 @@ def _ensure_titles_index_from_sources(source_files, index_file, log_label='title
                     nsu_id_raw = item.get('nsuId')
                     nsu_id = None if nsu_id_raw is None else str(nsu_id_raw)
                     description = str(item.get('description') or '').strip() or None
+                    rating = _coerce_rating(item.get('rating'))
                     search_hay = _normalize_title_search_text(f"{title_id} {name}")
                     batch.append((
                         title_id,
@@ -604,22 +623,23 @@ def _ensure_titles_index_from_sources(source_files, index_file, log_label='title
                         category,
                         nsu_id,
                         description,
+                        rating,
                         search_hay,
                         int(order),
                     ))
                     if len(batch) >= batch_size:
                         conn.executemany(
                             "INSERT OR REPLACE INTO titles "
-                            "(title_id, name, banner_url, icon_url, category, nsu_id, description, search_hay, sort_order) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            "(title_id, name, banner_url, icon_url, category, nsu_id, description, rating, search_hay, sort_order) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             batch,
                         )
                         batch.clear()
             if batch:
                 conn.executemany(
                     "INSERT OR REPLACE INTO titles "
-                    "(title_id, name, banner_url, icon_url, category, nsu_id, description, search_hay, sort_order) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "(title_id, name, banner_url, icon_url, category, nsu_id, description, rating, search_hay, sort_order) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     batch,
                 )
 
@@ -1364,7 +1384,7 @@ def _get_title_info_from_index_file(title_key, index_file, cache_store, cache_lo
         conn = _open_versions_index_db(index_file)
         try:
             row = conn.execute(
-                "SELECT name, banner_url, icon_url, title_id, category, nsu_id, description "
+                "SELECT name, banner_url, icon_url, title_id, category, nsu_id, description, rating "
                 "FROM titles WHERE title_id = ? LIMIT 1",
                 (title_key,),
             ).fetchone()
@@ -1385,6 +1405,7 @@ def _get_title_info_from_index_file(title_key, index_file, cache_store, cache_lo
         'category': row[4] or '',
         'nsuId': row[5],
         'description': row[6],
+        'rating': row[7],
     }
     with cache_lock:
         cache_store[title_key] = info
@@ -1415,7 +1436,7 @@ def _merge_preferred_title_info(base_info, preferred_info):
     merged = dict(base_info or {})
     if not isinstance(preferred_info, dict):
         return merged
-    for key in ('name', 'bannerUrl', 'iconUrl', 'id', 'category', 'nsuId', 'description'):
+    for key in ('name', 'bannerUrl', 'iconUrl', 'id', 'category', 'nsuId', 'description', 'rating'):
         value = preferred_info.get(key)
         if value is None:
             continue
@@ -1715,6 +1736,7 @@ def get_game_info(title_id):
             'category': '',
             'nsuId': None,
             'description': None,
+            'rating': None,
             'screenshots': [],
         })
 
@@ -1782,6 +1804,7 @@ def get_game_info(title_id):
             'category': merged_title_info.get('category') or '',
             'nsuId': merged_title_info.get('nsuId'),
             'description': description,
+            'rating': resolved_title_info.get('rating'),
             'screenshots': screenshots,
         })
     except Exception:
@@ -1811,6 +1834,7 @@ def get_game_info(title_id):
             'category': '',
             'nsuId': None,
             'description': None,
+            'rating': None,
             'screenshots': [],
         })
 
