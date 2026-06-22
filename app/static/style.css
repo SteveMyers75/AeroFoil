@@ -101,6 +101,23 @@
     overflow: hidden;
 }
 
+#detailsModal .btn-modal-size-toggle {
+    color: rgba(255, 255, 255, 0.65);
+    background: none;
+    border: none;
+    padding: 0;
+    box-shadow: none;
+    transition: color 0.15s ease-in-out, transform 0.15s ease-in-out;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#detailsModal .btn-modal-size-toggle:hover {
+    color: #fff;
+    transform: scale(1.15);
+}
+
 #detailsModal #detailsVersions {
     flex: 1 1 auto;
     min-height: 0;

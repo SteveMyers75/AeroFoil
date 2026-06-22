@@ -185,6 +185,7 @@ The `Game info` modal uses TitleDB metadata:
 - `description`: shown as the game summary.
 - `screenshots`: displayed in a grid; click a screenshot to open it larger.
 - `DLC search`: admins can trigger a download search for related add-ons directly from the details flow.
+- `Expand/Collapse toggle`: toggles the details card width (between standard `modal-lg` and `90vw` expanded layout) to provide more screen space when browsing. This preference is saved for the duration of the browser session.
 
 AeroFoil will download the TitleDB descriptions/screenshot dataset on demand to `./data/titledb/US.en.json` (Docker path: `/app/data/titledb/US.en.json`).
 
