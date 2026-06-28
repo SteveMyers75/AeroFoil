@@ -36,6 +36,32 @@ class RTorrentClientTests(unittest.TestCase):
         load_call = next(call for call in rpc_mock.call_args_list if call.args[1] == "load.start_verbose")
         self.assertIn("d.custom1.set=aerofoil", load_call.args[2])
 
+    @patch("app.downloads.torrent_client._set_rtorrent_file_priority")
+    @patch("app.downloads.torrent_client.time.sleep", return_value=None)
+    @patch("app.downloads.torrent_client._fetch_rtorrent_file_names")
+    def test_select_rtorrent_highest_version_waits_for_file_names(self, fetch_names_mock, sleep_mock, priority_mock):
+        fetch_names_mock.side_effect = [
+            [],
+            ["Example Update [v65536].nsp", "bonus.dat"],
+        ]
+
+        ok = torrent_client._select_rtorrent_highest_version(
+            "http://rtorrent.local",
+            "abcdef",
+            "user",
+            "pass",
+            10,
+            exclude_russian=False,
+            expected_version=65536,
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(fetch_names_mock.call_count, 2)
+        self.assertTrue(sleep_mock.called)
+        priority_mock.assert_any_call("http://rtorrent.local", "abcdef", 0, 0, "user", "pass", 10)
+        priority_mock.assert_any_call("http://rtorrent.local", "abcdef", 1, 0, "user", "pass", 10)
+        priority_mock.assert_any_call("http://rtorrent.local", "abcdef", 0, 1, "user", "pass", 10)
+
     @patch("app.downloads.torrent_client._compute_torrent_infohash", return_value=None)
     @patch("app.downloads.torrent_client._rtorrent_xmlrpc")
     def test_add_rtorrent_resolves_hash_by_name_when_infohash_unavailable(self, rpc_mock, _infohash_mock):

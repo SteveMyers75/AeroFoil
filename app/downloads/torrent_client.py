@@ -3178,9 +3178,13 @@ def _set_rtorrent_file_priority(url, torrent_hash, file_id, priority, username, 
 
 
 def _select_rtorrent_highest_version(url, torrent_hash, username, password, timeout_seconds, exclude_russian, expected_update_number=None, expected_version=None):
-    file_entries = _fetch_rtorrent_file_entries(url, torrent_hash, username, password, timeout_seconds)
-    if not file_entries:
+    file_names = poll_update_file_names(
+        lambda: _fetch_rtorrent_file_names(url, torrent_hash, username, password, timeout_seconds),
+        sleep_fn=time.sleep,
+    )
+    if not file_names:
         return False
+    file_entries = list(enumerate(file_names))
     keep_ids = set(
         select_update_entry_ids(
             file_entries,
