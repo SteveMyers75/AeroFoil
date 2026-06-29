@@ -975,7 +975,7 @@ def search_update_options(title_id, version, limit=20):
     return True, None, trimmed
 
 
-def queue_download_url(download_url, expected_name=None, update_only=False, expected_version=None, title_id=None, protocol=None):
+def queue_download_url(download_url, expected_name=None, update_only=False, dlc_only=False, expected_version=None, title_id=None, protocol=None):
     settings = load_settings()
     downloads = settings.get("downloads", {})
     resolved_protocol = _infer_protocol(download_url=download_url, explicit_protocol=protocol)
@@ -994,12 +994,14 @@ def queue_download_url(download_url, expected_name=None, update_only=False, expe
             if known_highest >= requested_version:
                 return False, f"duplicate update: {str(title_id).strip().upper()} v{requested_version} already known (latest v{known_highest})"
     queue_update_only = bool(update_only and resolved_protocol != "usenet")
+    queue_dlc_only = bool(dlc_only)
     ok, message, item_id = queue_download(
         resolved_protocol,
         client_cfg,
         download_url,
         expected_name=expected_name,
         update_only=queue_update_only,
+        dlc_only=queue_dlc_only,
         exclude_russian=True,
         expected_version=expected_version,
     )

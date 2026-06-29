@@ -45,6 +45,7 @@ DOWNLOAD_QUEUE_OPTION_KEYS = (
     "expected_name",
     "expected_update_number",
     "expected_version",
+    "dlc_only",
 )
 
 

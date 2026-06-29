@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from app.downloads.manager import _extract_update_version_from_name, _get_import_extension, _infer_protocol
 from app.downloads.prowlarr import ProwlarrClient, _normalize_result, filter_results, pick_best_result
+from app.downloads.versioning import select_dlc_file_indices
 from app.settings import _normalize_download_settings
 
 
@@ -126,6 +127,23 @@ class DownloadProtocolTests(unittest.TestCase):
         ]
         filtered = filter_results(results, blacklist_terms=["update"])
         self.assertEqual([item["title"] for item in filtered], ["Sample Base Game"])
+
+    def test_select_dlc_file_indices_prefers_dlc_named_files(self):
+        file_names = [
+            "Example Game [0100AAAA00000000] [BASE].nsp",
+            "Example Game [0100AAAA00000001] [DLC][v0].nsp",
+            "Example Game bonus.dat",
+        ]
+
+        self.assertEqual(select_dlc_file_indices(file_names), [1])
+
+    def test_select_dlc_file_indices_matches_dlc_app_id_suffix(self):
+        file_names = [
+            "0100AAAA00000000.nsp",
+            "0100AAAA00000001.nsp",
+        ]
+
+        self.assertEqual(select_dlc_file_indices(file_names), [1])
 
     def test_extract_update_version_prefers_bracketed_token(self):
         self.assertEqual(_extract_update_version_from_name("Game [v1245184] v999.nsp"), 1245184)

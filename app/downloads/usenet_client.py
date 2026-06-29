@@ -8,7 +8,9 @@ import requests
 
 from app.downloads.constants import DOWNLOADS_USER_AGENT
 from app.downloads.update_selection import (
+    NZB_DLC_SELECTION_ERROR,
     NZB_UPDATE_SELECTION_ERROR,
+    get_matching_dlc_indices,
     get_matching_update_indices,
     poll_update_file_names,
 )
@@ -45,6 +47,7 @@ def add_nzb(
     timeout_seconds=15,
     expected_name=None,
     update_only=False,
+    dlc_only=False,
     exclude_russian=False,
     expected_update_number=None,
     expected_version=None,
@@ -54,7 +57,7 @@ def add_nzb(
     if not api_key:
         return False, "SABnzbd API key is required.", None
     try:
-        priority = -2 if update_only else None
+        priority = -2 if update_only or dlc_only else None
         payload = _sab_request(
             url,
             api_key,
@@ -74,19 +77,30 @@ def add_nzb(
         elif isinstance(nzo_id, str) and "," in nzo_id:
             nzo_id = nzo_id.split(",", 1)[0].strip()
         nzo_id = str(nzo_id or "").strip() or None
-        if update_only and nzo_id:
-            ok, message = _restrict_job_to_matching_update_files(
-                url,
-                api_key,
-                nzo_id,
-                timeout_seconds=timeout_seconds,
-                exclude_russian=exclude_russian,
-                expected_update_number=expected_update_number,
-                expected_version=expected_version,
-            )
+        if (update_only or dlc_only) and nzo_id:
+            if update_only:
+                ok, message = _restrict_job_to_matching_update_files(
+                    url,
+                    api_key,
+                    nzo_id,
+                    timeout_seconds=timeout_seconds,
+                    exclude_russian=exclude_russian,
+                    expected_update_number=expected_update_number,
+                    expected_version=expected_version,
+                )
+                no_match_error = NZB_UPDATE_SELECTION_ERROR
+            else:
+                ok, message = _restrict_job_to_matching_dlc_files(
+                    url,
+                    api_key,
+                    nzo_id,
+                    timeout_seconds=timeout_seconds,
+                    exclude_russian=exclude_russian,
+                )
+                no_match_error = NZB_DLC_SELECTION_ERROR
             if not ok:
                 _delete_job(url, api_key, nzo_id, timeout_seconds=timeout_seconds)
-                return False, message, None
+                return False, message or no_match_error, None
             if not _resume_job(url, api_key, nzo_id, timeout_seconds=timeout_seconds):
                 _delete_job(url, api_key, nzo_id, timeout_seconds=timeout_seconds)
                 return False, "SABnzbd accepted NZB but failed to resume the paused job.", None
@@ -420,6 +434,41 @@ def _restrict_job_to_matching_update_files(
     return True, None
 
 
+def _restrict_job_to_matching_dlc_files(
+    url,
+    api_key,
+    nzo_id,
+    timeout_seconds=15,
+    exclude_russian=False,
+):
+    files = poll_update_file_names(
+        lambda: _get_job_files(url, api_key, nzo_id, timeout_seconds=timeout_seconds),
+        sleep_fn=time.sleep,
+    )
+    if not files:
+        return False, "Unable to resolve SABnzbd file list for DLC selection."
+
+    file_names = [str(item.get("filename") or "") for item in files]
+    keep_indices = get_matching_dlc_indices(
+        file_names,
+        exclude_russian=exclude_russian,
+    )
+    if not keep_indices:
+        return False, NZB_DLC_SELECTION_ERROR
+
+    keep_set = set(keep_indices)
+    remove_ids = []
+    for idx, file_info in enumerate(files):
+        if idx in keep_set:
+            continue
+        nzf_id = str(file_info.get("nzf_id") or "").strip()
+        if nzf_id:
+            remove_ids.append(nzf_id)
+    if remove_ids and not _delete_job_files(url, api_key, nzo_id, remove_ids, timeout_seconds=timeout_seconds):
+        return False, "Failed to restrict SABnzbd job to matching DLC files."
+    return True, None
+
+
 def _to_float(value, default=0.0):
     try:
         return float(value)
@@ -479,6 +528,7 @@ def add_nzbget(
     timeout_seconds=15,
     expected_name=None,
     update_only=False,
+    dlc_only=False,
     exclude_russian=False,
     expected_update_number=None,
     expected_version=None,

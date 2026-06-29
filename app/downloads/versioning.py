@@ -15,6 +15,14 @@ def extract_internal_update_version(name):
         return None
 
 
+def _normalize_leaf_name(name):
+    text = str(name or "").strip()
+    if not text:
+        return ""
+    text = text.replace("\\", "/")
+    return text.rsplit("/", 1)[-1]
+
+
 def _expected_semantic_version(expected_version):
     try:
         value = int(expected_version)
@@ -111,5 +119,35 @@ def select_update_file_indices(file_names, expected_update_number=None, expected
         list(enumerate(file_names)),
         expected_update_number=expected_update_number,
         expected_version=expected_version,
+        exclude_russian=exclude_russian,
+    )
+
+
+def _looks_like_dlc_file(name):
+    leaf_name = _normalize_leaf_name(name).lower()
+    if not leaf_name:
+        return False
+    if re.search(r"(?<![a-z0-9])dlc(?![a-z0-9])", leaf_name, re.IGNORECASE):
+        return True
+    return bool(re.search(r"(?<![0-9a-f])[0-9a-f]{13}00[1-9a-f](?![0-9a-f])", leaf_name, re.IGNORECASE))
+
+
+def select_dlc_entry_ids(file_entries, exclude_russian=False):
+    matching_ids = []
+    for entry_id, raw_name in file_entries or []:
+        name = str(raw_name or "")
+        lowered = name.lower()
+        if exclude_russian and ("russian" in lowered or "rus" in lowered):
+            continue
+        if _looks_like_dlc_file(name):
+            matching_ids.append(entry_id)
+    return matching_ids
+
+
+def select_dlc_file_indices(file_names, exclude_russian=False):
+    if not file_names:
+        return []
+    return select_dlc_entry_ids(
+        list(enumerate(file_names)),
         exclude_russian=exclude_russian,
     )

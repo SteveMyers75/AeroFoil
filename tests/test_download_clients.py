@@ -275,6 +275,32 @@ class QueueRoutingTests(unittest.TestCase):
         self.assertEqual(queue_download_mock.call_args.args[0], "usenet")
         self.assertEqual(queue_download_mock.call_args.args[1]["url"], "http://sab.local")
 
+    @patch("app.downloads.manager.queue_download")
+    @patch("app.downloads.manager.load_settings")
+    def test_queue_download_url_forwards_dlc_only_flag(self, load_settings_mock, queue_download_mock):
+        load_settings_mock.return_value = {
+            "downloads": {
+                "torrent_client": {
+                    "type": "rtorrent",
+                    "url": "http://rtorrent.local",
+                    "username": "user",
+                    "password": "pass",
+                },
+            }
+        }
+        queue_download_mock.return_value = (True, "ok", "abc123")
+
+        ok, message = queue_download_url(
+            "magnet:?xt=urn:btih:abcdef",
+            expected_name="Example DLC",
+            dlc_only=True,
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Queued download.")
+        queue_download_mock.assert_called_once()
+        self.assertTrue(queue_download_mock.call_args.kwargs["dlc_only"])
+
     @patch("app.downloads.client.add_torrent")
     @patch("app.downloads.client.resolve_download_url")
     def test_queue_download_forwards_resolved_torrent_content(self, resolve_download_url_mock, add_torrent_mock):
@@ -329,6 +355,33 @@ class QueueRoutingTests(unittest.TestCase):
         self.assertEqual(queue_download_mock.call_args.args[0], "usenet")
         self.assertFalse(queue_download_mock.call_args.kwargs["update_only"])
         self.assertEqual(queue_download_mock.call_args.kwargs["expected_version"], 123)
+
+    @patch("app.downloads.usenet_client._delete_job")
+    @patch("app.downloads.usenet_client._resume_job", return_value=False)
+    @patch("app.downloads.usenet_client._restrict_job_to_matching_dlc_files", return_value=(True, None))
+    @patch("app.downloads.usenet_client._sab_request")
+    def test_add_nzb_fails_when_resume_fails_for_dlc_only(
+        self,
+        sab_request_mock,
+        restrict_mock,
+        resume_mock,
+        delete_job_mock,
+    ):
+        sab_request_mock.return_value = {"status": True, "nzo_ids": ["nzo123"]}
+
+        ok, message, item_id = add_nzb(
+            "http://sab.local",
+            "secret",
+            "https://indexer.example/file.nzb",
+            dlc_only=True,
+        )
+
+        self.assertFalse(ok)
+        self.assertIn("failed to resume", message.lower())
+        self.assertIsNone(item_id)
+        restrict_mock.assert_called_once()
+        resume_mock.assert_called_once()
+        delete_job_mock.assert_called_once_with("http://sab.local", "secret", "nzo123", timeout_seconds=15)
 
     @patch("app.downloads.manager.queue_download")
     @patch("app.downloads.manager.load_settings")

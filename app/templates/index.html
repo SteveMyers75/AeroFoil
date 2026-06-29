@@ -1900,6 +1900,7 @@
             const titleId = button.data('title-id');
             const protocol = button.data('protocol');
             const updateOnly = button.data('update-only') === true || button.data('update-only') === 'true';
+            const dlcOnly = button.data('dlc-only') === true || button.data('dlc-only') === 'true';
             const expectedVersion = button.data('expected-version');
             const originalLabel = String(button.attr('data-action-label') || button.text() || 'Queue');
             if (!downloadUrl) {
@@ -1916,6 +1917,7 @@
                     title_id: titleId,
                     protocol: protocol,
                     update_only: updateOnly,
+                    dlc_only: dlcOnly,
                     expected_version: expectedVersion
                 }),
                 contentType: "application/json",
@@ -2784,6 +2786,7 @@
                 return {
                     'title-id': titleId || '',
                     'update-only': 'false',
+                    'dlc-only': 'true',
                 };
             },
         });

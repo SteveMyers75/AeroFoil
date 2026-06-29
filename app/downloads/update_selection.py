@@ -1,10 +1,12 @@
 import time
 
-from app.downloads.versioning import select_update_file_indices
+from app.downloads.versioning import select_dlc_file_indices, select_update_file_indices
 
 
 TORRENT_UPDATE_SELECTION_ERROR = "No matching update version found in torrent."
 NZB_UPDATE_SELECTION_ERROR = "No matching update version found in NZB."
+TORRENT_DLC_SELECTION_ERROR = "No matching DLC files found in torrent."
+NZB_DLC_SELECTION_ERROR = "No matching DLC files found in NZB."
 UPDATE_FILE_POLL_ATTEMPTS = 10
 UPDATE_FILE_POLL_INTERVAL_SECONDS = 1
 
@@ -36,6 +38,30 @@ def preflight_has_matching_update(
             file_names,
             expected_update_number=expected_update_number,
             expected_version=expected_version,
+            exclude_russian=exclude_russian,
+        )
+    )
+
+
+def get_matching_dlc_indices(
+    file_names,
+    exclude_russian=False,
+):
+    return select_dlc_file_indices(
+        file_names,
+        exclude_russian=exclude_russian,
+    )
+
+
+def preflight_has_matching_dlc(
+    file_names,
+    exclude_russian=False,
+):
+    if file_names is None:
+        return True
+    return bool(
+        get_matching_dlc_indices(
+            file_names,
             exclude_russian=exclude_russian,
         )
     )

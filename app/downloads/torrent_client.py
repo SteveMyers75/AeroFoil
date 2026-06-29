@@ -13,12 +13,16 @@ import requests
 
 from app.downloads.constants import DOWNLOADS_USER_AGENT, UNSUPPORTED_CLIENT_TYPE_MESSAGE
 from app.downloads.update_selection import (
+    TORRENT_DLC_SELECTION_ERROR,
     TORRENT_UPDATE_SELECTION_ERROR,
+    get_matching_dlc_indices,
     get_matching_update_indices,
     poll_update_file_names,
+    preflight_has_matching_dlc,
     preflight_has_matching_update,
 )
 from app.downloads.versioning import (
+    select_dlc_entry_ids,
     select_update_entry_ids,
     select_update_file_indices as shared_select_update_file_indices,
 )
@@ -219,16 +223,16 @@ def test_torrent_client(client_type, url, username=None, password=None, timeout_
     return False, UNSUPPORTED_CLIENT_TYPE_MESSAGE
 
 
-def add_torrent(client_type, url, username=None, password=None, download_url=None, torrent_content=None, category=None, download_path=None, timeout_seconds=15, expected_name=None, update_only=False, exclude_russian=False, expected_update_number=None, expected_version=None):
+def add_torrent(client_type, url, username=None, password=None, download_url=None, torrent_content=None, category=None, download_path=None, timeout_seconds=15, expected_name=None, update_only=False, dlc_only=False, exclude_russian=False, expected_update_number=None, expected_version=None):
     if not download_url and not torrent_content:
         return False, "Download URL is required.", None
     client_type = (client_type or "").lower()
     if client_type == "qbittorrent":
-        return _add_qbittorrent(url, username, password, download_url, torrent_content, category, download_path, timeout_seconds, expected_name, update_only, exclude_russian, expected_update_number, expected_version)
+        return _add_qbittorrent(url, username, password, download_url, torrent_content, category, download_path, timeout_seconds, expected_name, update_only, dlc_only, exclude_russian, expected_update_number, expected_version)
     if client_type == "transmission":
-        return _add_transmission(url, username, password, download_url, torrent_content, category, download_path, timeout_seconds, expected_name, update_only, exclude_russian, expected_update_number, expected_version)
+        return _add_transmission(url, username, password, download_url, torrent_content, category, download_path, timeout_seconds, expected_name, update_only, dlc_only, exclude_russian, expected_update_number, expected_version)
     if client_type == "deluge":
-        return _add_deluge(url, password, download_url, torrent_content, category, download_path, timeout_seconds, update_only, exclude_russian, expected_update_number, expected_version)
+        return _add_deluge(url, password, download_url, torrent_content, category, download_path, timeout_seconds, update_only, dlc_only, exclude_russian, expected_update_number, expected_version)
     if client_type == "rtorrent":
         return _add_rtorrent(
             url,
@@ -239,6 +243,7 @@ def add_torrent(client_type, url, username=None, password=None, download_url=Non
             download_path,
             timeout_seconds,
             update_only,
+            dlc_only,
             exclude_russian,
             expected_update_number,
             expected_version,
@@ -261,7 +266,7 @@ def add_torrent(client_type, url, username=None, password=None, download_url=Non
     if client_type == "flood":
         return _add_flood(url, username, password, download_url, category, timeout_seconds)
     if client_type == "vuze":
-        return _add_transmission(url, username, password, download_url, torrent_content, category, download_path, timeout_seconds, expected_name, update_only, exclude_russian, expected_update_number, expected_version)
+        return _add_transmission(url, username, password, download_url, torrent_content, category, download_path, timeout_seconds, expected_name, update_only, dlc_only, exclude_russian, expected_update_number, expected_version)
     if client_type == "hadouken":
         return _add_hadouken(url, username, password, download_url, timeout_seconds)
     if client_type == "tribler":
@@ -1689,13 +1694,13 @@ def _test_rtorrent(url, username=None, password=None, timeout_seconds=10):
     return True, f"rTorrent OK{f' (v{version_text})' if version_text else ''}."
 
 
-def _add_deluge(url, password, download_url, torrent_content, category, download_path, timeout_seconds, update_only, exclude_russian, expected_update_number, expected_version):
+def _add_deluge(url, password, download_url, torrent_content, category, download_path, timeout_seconds, update_only, dlc_only, exclude_russian, expected_update_number, expected_version):
     ok, logged_in = _deluge_login(url, password, timeout_seconds=timeout_seconds)
     if not ok or not logged_in:
         return False, "Deluge login failed.", None
 
     options = {}
-    if update_only:
+    if update_only or dlc_only:
         options["add_paused"] = True
     if download_path:
         options["download_location"] = download_path
@@ -1736,20 +1741,28 @@ def _add_deluge(url, password, download_url, torrent_content, category, download
     if not torrent_hash:
         torrent_hash = _extract_magnet_hash(download_url) if download_url else None
 
-    if update_only and torrent_hash:
+    if (update_only or dlc_only) and torrent_hash:
         file_names = poll_update_file_names(
             lambda: _fetch_deluge_file_names(url, password, torrent_hash, timeout_seconds),
             sleep_fn=time.sleep,
         )
-        keep_indices = get_matching_update_indices(
-            file_names,
-            expected_update_number=expected_update_number,
-            expected_version=expected_version,
-            exclude_russian=exclude_russian,
-        )
+        if update_only:
+            keep_indices = get_matching_update_indices(
+                file_names,
+                expected_update_number=expected_update_number,
+                expected_version=expected_version,
+                exclude_russian=exclude_russian,
+            )
+            no_match_error = TORRENT_UPDATE_SELECTION_ERROR
+        else:
+            keep_indices = get_matching_dlc_indices(
+                file_names,
+                exclude_russian=exclude_russian,
+            )
+            no_match_error = TORRENT_DLC_SELECTION_ERROR
         if not keep_indices:
             _remove_deluge(url, password, torrent_hash, timeout_seconds)
-            return False, TORRENT_UPDATE_SELECTION_ERROR, None
+            return False, no_match_error, None
         priorities = [0] * len(file_names or [])
         for idx in keep_indices:
             if idx < len(priorities):
@@ -1780,6 +1793,7 @@ def _add_rtorrent(
     download_path,
     timeout_seconds,
     update_only,
+    dlc_only,
     exclude_russian,
     expected_update_number,
     expected_version,
@@ -1795,6 +1809,13 @@ def _add_rtorrent(
             exclude_russian=exclude_russian,
         ):
             return False, TORRENT_UPDATE_SELECTION_ERROR, None
+    elif dlc_only:
+        preflight_files = _get_torrent_file_list(download_url, timeout_seconds)
+        if not preflight_has_matching_dlc(
+            preflight_files,
+            exclude_russian=exclude_russian,
+        ):
+            return False, TORRENT_DLC_SELECTION_ERROR, None
 
     managed_label = _build_rtorrent_managed_label(category)
     add_args = ["", download_url]
@@ -1821,33 +1842,45 @@ def _add_rtorrent(
             password,
             timeout_seconds,
         )
-    if update_only and torrent_hash:
+    if (update_only or dlc_only) and torrent_hash:
         _rtorrent_xmlrpc(url, "d.stop", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
     if torrent_hash:
         _rtorrent_xmlrpc(url, "d.custom1.set", [torrent_hash, managed_label], timeout_seconds=timeout_seconds, username=username, password=password)
         if download_path:
             _rtorrent_xmlrpc(url, "d.directory.set", [torrent_hash, download_path], timeout_seconds=timeout_seconds, username=username, password=password)
-    if update_only:
+    if update_only or dlc_only:
         if not torrent_hash:
             return False, "Unable to resolve torrent hash for file selection.", None
-        selected = _select_rtorrent_highest_version(
-            url,
-            torrent_hash,
-            username,
-            password,
-            timeout_seconds,
-            exclude_russian=exclude_russian,
-            expected_update_number=expected_update_number,
-            expected_version=expected_version,
-        )
+        if update_only:
+            selected = _select_rtorrent_highest_version(
+                url,
+                torrent_hash,
+                username,
+                password,
+                timeout_seconds,
+                exclude_russian=exclude_russian,
+                expected_update_number=expected_update_number,
+                expected_version=expected_version,
+            )
+            no_match_error = TORRENT_UPDATE_SELECTION_ERROR
+        else:
+            selected = _select_rtorrent_dlc_files(
+                url,
+                torrent_hash,
+                username,
+                password,
+                timeout_seconds,
+                exclude_russian=exclude_russian,
+            )
+            no_match_error = TORRENT_DLC_SELECTION_ERROR
         if not selected:
             _remove_rtorrent(url, torrent_hash, username, password, timeout_seconds, delete_files=True)
-            return False, TORRENT_UPDATE_SELECTION_ERROR, None
+            return False, no_match_error, None
         _rtorrent_xmlrpc(url, "d.start", [torrent_hash], timeout_seconds=timeout_seconds, username=username, password=password)
     return True, "rTorrent accepted torrent.", torrent_hash
 
 
-def _add_qbittorrent(url, username, password, download_url, torrent_content, category, download_path, timeout_seconds, expected_name, update_only, exclude_russian, expected_update_number, expected_version):
+def _add_qbittorrent(url, username, password, download_url, torrent_content, category, download_path, timeout_seconds, expected_name, update_only, dlc_only, exclude_russian, expected_update_number, expected_version):
     base = url.rstrip("/")
     session = _new_client_session()
     if not _login_qbittorrent(session, base, username, password, timeout_seconds):
@@ -1860,31 +1893,39 @@ def _add_qbittorrent(url, username, password, download_url, torrent_content, cat
     else:
         data["urls"] = download_url
     temp_tag = None
-    if update_only:
+    if update_only or dlc_only:
         if torrent_content:
             preflight_files = _get_torrent_file_list_from_content(torrent_content)
         else:
             preflight_files = _get_torrent_file_list(download_url, timeout_seconds)
-        if not preflight_has_matching_update(
-            preflight_files,
-            expected_update_number=expected_update_number,
-            expected_version=expected_version,
-            exclude_russian=exclude_russian,
-        ):
-            return False, TORRENT_UPDATE_SELECTION_ERROR, None
-        temp_tag = f"aerofoil_update_{int(time.time())}_{secrets.token_hex(3)}"
+        if update_only:
+            if not preflight_has_matching_update(
+                preflight_files,
+                expected_update_number=expected_update_number,
+                expected_version=expected_version,
+                exclude_russian=exclude_russian,
+            ):
+                return False, TORRENT_UPDATE_SELECTION_ERROR, None
+            temp_tag = f"aerofoil_update_{int(time.time())}_{secrets.token_hex(3)}"
+        else:
+            if not preflight_has_matching_dlc(
+                preflight_files,
+                exclude_russian=exclude_russian,
+            ):
+                return False, TORRENT_DLC_SELECTION_ERROR, None
+            temp_tag = f"aerofoil_dlc_{int(time.time())}_{secrets.token_hex(3)}"
     if category:
         data["category"] = category
     tags = _build_qbittorrent_tags(category, temp_tag)
     if tags:
         data["tags"] = tags
-    if update_only:
+    if update_only or dlc_only:
         data["paused"] = "true"
     if download_path:
         data["savepath"] = download_path
     added_at = int(time.time())
     infohash_v1 = _compute_torrent_infohash_from_content(torrent_content) if torrent_content else _compute_torrent_infohash(download_url, timeout_seconds)
-    if update_only and infohash_v1:
+    if (update_only or dlc_only) and infohash_v1:
         logger.info("Computed torrent infohash_v1: %s", infohash_v1)
     resp = session.post(f"{base}/api/v2/torrents/add", data=data, files=files, timeout=timeout_seconds)
     if resp.status_code not in (200, 202):
@@ -1919,11 +1960,11 @@ def _add_qbittorrent(url, username, password, download_url, torrent_content, cat
                 break
             time.sleep(1)
         torrent_hash = resolved_hash
-    if update_only and infohash_v1 and temp_tag:
+    if (update_only or dlc_only) and infohash_v1 and temp_tag:
         torrent_hash = _find_qbittorrent_hash_by_tag_and_infohash(
             session, base, temp_tag, infohash_v1, timeout_seconds
         )
-    if infohash_v1 and (update_only or not torrent_hash):
+    if infohash_v1 and ((update_only or dlc_only) or not torrent_hash):
         torrent_hash = _find_qbittorrent_hash_by_infohash(session, base, infohash_v1, category, added_at, timeout_seconds)
         if torrent_hash:
             logger.info("Matched torrent hash %s for infohash_v1 %s", torrent_hash, infohash_v1)
@@ -1941,31 +1982,43 @@ def _add_qbittorrent(url, username, password, download_url, torrent_content, cat
             if torrent_hash:
                 break
             time.sleep(1)
-    if update_only and torrent_hash:
+    if (update_only or dlc_only) and torrent_hash:
         normalized = _normalize_hash(session, base, torrent_hash, timeout_seconds)
         if normalized:
             torrent_hash = normalized
-    if update_only and torrent_hash:
-        logger.info("Selecting highest version for torrent %s", torrent_hash)
-        selected = _select_qbittorrent_highest_version(
-            session,
-            base,
-            torrent_hash,
-            timeout_seconds,
-            exclude_russian,
-            expected_update_number=expected_update_number,
-            expected_version=expected_version
-        )
+    if update_only or dlc_only:
+        if not torrent_hash:
+            return False, "Unable to resolve torrent hash for file selection.", None
+        if update_only:
+            logger.info("Selecting highest version for torrent %s", torrent_hash)
+            selected = _select_qbittorrent_highest_version(
+                session,
+                base,
+                torrent_hash,
+                timeout_seconds,
+                exclude_russian,
+                expected_update_number=expected_update_number,
+                expected_version=expected_version
+            )
+            no_match_error = TORRENT_UPDATE_SELECTION_ERROR
+        else:
+            logger.info("Selecting DLC files for torrent %s", torrent_hash)
+            selected = _select_qbittorrent_dlc_files(
+                session,
+                base,
+                torrent_hash,
+                timeout_seconds,
+                exclude_russian,
+            )
+            no_match_error = TORRENT_DLC_SELECTION_ERROR
         if not selected:
             if temp_tag:
                 _remove_qbittorrent_tag(session, base, torrent_hash, temp_tag, timeout_seconds)
             _remove_qbittorrent_with_session(session, base, torrent_hash, timeout_seconds)
-            return False, TORRENT_UPDATE_SELECTION_ERROR, None
+            return False, no_match_error, None
         _resume_qbittorrent(session, base, torrent_hash, timeout_seconds)
         if temp_tag:
             _remove_qbittorrent_tag(session, base, torrent_hash, temp_tag, timeout_seconds)
-    elif update_only:
-        return False, "Unable to resolve torrent hash for file selection.", None
     elif not torrent_hash:
         return False, "qBittorrent did not report the added torrent.", None
     elif exclude_russian and torrent_hash:
@@ -1973,29 +2026,36 @@ def _add_qbittorrent(url, username, password, download_url, torrent_content, cat
     return True, "qBittorrent accepted torrent.", torrent_hash
 
 
-def _add_transmission(url, username, password, download_url, torrent_content, category, download_path, timeout_seconds, expected_name, update_only, exclude_russian, expected_update_number, expected_version):
+def _add_transmission(url, username, password, download_url, torrent_content, category, download_path, timeout_seconds, expected_name, update_only, dlc_only, exclude_russian, expected_update_number, expected_version):
     base = url.rstrip("/")
     session = _new_client_session(username, password)
 
     preflight_files = None
-    if update_only:
+    if update_only or dlc_only:
         if torrent_content:
             preflight_files = _get_torrent_file_list_from_content(torrent_content)
         else:
             preflight_files = _get_torrent_file_list(download_url, timeout_seconds)
-        if not preflight_has_matching_update(
-            preflight_files,
-            expected_update_number=expected_update_number,
-            expected_version=expected_version,
-            exclude_russian=exclude_russian,
-        ):
-            return False, TORRENT_UPDATE_SELECTION_ERROR, None
+        if update_only:
+            if not preflight_has_matching_update(
+                preflight_files,
+                expected_update_number=expected_update_number,
+                expected_version=expected_version,
+                exclude_russian=exclude_russian,
+            ):
+                return False, TORRENT_UPDATE_SELECTION_ERROR, None
+        else:
+            if not preflight_has_matching_dlc(
+                preflight_files,
+                exclude_russian=exclude_russian,
+            ):
+                return False, TORRENT_DLC_SELECTION_ERROR, None
 
     if torrent_content:
         payload = {"method": "torrent-add", "arguments": {"metainfo": get_metainfo_base64(torrent_content)}}
     else:
         payload = {"method": "torrent-add", "arguments": {"filename": download_url}}
-    if update_only:
+    if update_only or dlc_only:
         payload["arguments"]["paused"] = True
     labels = [AEROFOIL_MANAGED_TAG]
     if category:
@@ -2015,23 +2075,31 @@ def _add_transmission(url, username, password, download_url, torrent_content, ca
     torrent_hash = torrent.get("hashString") or (_extract_magnet_hash(download_url) if download_url else None)
     torrent_id = torrent.get("id") or torrent.get("hashString")
 
-    if update_only and not torrent_id:
+    if (update_only or dlc_only) and not torrent_id:
         return False, "Unable to resolve torrent id for file selection.", None
-    if update_only and torrent_id:
+    if (update_only or dlc_only) and torrent_id:
         file_names = poll_update_file_names(
             lambda: _fetch_transmission_file_names(_request, torrent_id),
             sleep_fn=time.sleep,
         )
-        file_indices = get_matching_update_indices(
-            file_names,
-            expected_update_number=expected_update_number,
-            expected_version=expected_version,
-            exclude_russian=exclude_russian,
-        )
+        if update_only:
+            file_indices = get_matching_update_indices(
+                file_names,
+                expected_update_number=expected_update_number,
+                expected_version=expected_version,
+                exclude_russian=exclude_russian,
+            )
+            no_match_error = TORRENT_UPDATE_SELECTION_ERROR
+        else:
+            file_indices = get_matching_dlc_indices(
+                file_names,
+                exclude_russian=exclude_russian,
+            )
+            no_match_error = TORRENT_DLC_SELECTION_ERROR
         if not file_indices:
             if torrent_hash:
                 _remove_transmission(url, username, password, torrent_hash, timeout_seconds)
-            return False, TORRENT_UPDATE_SELECTION_ERROR, None
+            return False, no_match_error, None
         all_indices = list(range(len(file_names))) if file_names else []
         unwanted = [i for i in all_indices if i not in file_indices]
         set_payload = {
@@ -2829,6 +2897,44 @@ def _select_update_file_indices(file_names, expected_update_number=None, expecte
     )
 
 
+def _select_matching_file_ids(file_entries, selector, no_match_message, selector_label):
+    keep_ids = [str(file_id) for file_id in selector(file_entries or [])]
+    if not keep_ids:
+        logger.warning(
+            "No %s files found in torrent selection (%s entries).",
+            selector_label,
+            len(file_entries or []),
+        )
+        return False, no_match_message, []
+    return True, None, keep_ids
+
+
+def _select_update_file_ids(file_entries, expected_update_number=None, expected_version=None, exclude_russian=False):
+    return _select_matching_file_ids(
+        file_entries,
+        lambda entries: select_update_entry_ids(
+            entries,
+            expected_update_number=expected_update_number,
+            expected_version=expected_version,
+            exclude_russian=exclude_russian,
+        ),
+        TORRENT_UPDATE_SELECTION_ERROR,
+        "update",
+    )
+
+
+def _select_dlc_file_ids(file_entries, exclude_russian=False):
+    return _select_matching_file_ids(
+        file_entries,
+        lambda entries: select_dlc_entry_ids(
+            entries,
+            exclude_russian=exclude_russian,
+        ),
+        TORRENT_DLC_SELECTION_ERROR,
+        "DLC",
+    )
+
+
 def _extract_info_bencode_slice(data):
     if not data:
         return None
@@ -3123,6 +3229,77 @@ def _select_qbittorrent_highest_version(session, base, torrent_hash, timeout_sec
     return True
 
 
+def _select_qbittorrent_dlc_files(session, base, torrent_hash, timeout_seconds, exclude_russian):
+    resp = session.get(
+        f"{base}/api/v2/torrents/files",
+        params={"hash": torrent_hash},
+        timeout=timeout_seconds,
+    )
+    if resp.status_code != 200:
+        logger.warning("Failed to fetch torrent files for %s: %s", torrent_hash, resp.status_code)
+        return
+    files = resp.json() or []
+    logger.info("Torrent %s file list entries: %s", torrent_hash, len(files))
+    all_ids = []
+    file_entries = []
+    for file in files:
+        name = file.get("name") or ""
+        file_id = file.get("index")
+        if file_id is None:
+            file_id = file.get("id")
+        if file_id is None:
+            continue
+        all_ids.append(str(file_id))
+        file_entries.append((file_id, name))
+    keep_ids = [
+        str(file_id) for file_id in select_dlc_entry_ids(
+            file_entries,
+            exclude_russian=exclude_russian,
+        )
+    ]
+    if not keep_ids:
+        logger.warning("No DLC files found for torrent %s.", torrent_hash)
+        return False
+    keep_set = set(keep_ids)
+    if all_ids:
+        disable_resp = _set_qbittorrent_file_priority(session, base, torrent_hash, all_ids, 0, timeout_seconds)
+        logger.info("Disable all files response: %s", disable_resp)
+    if keep_ids:
+        enable_resp = _set_qbittorrent_file_priority(session, base, torrent_hash, keep_ids, 1, timeout_seconds)
+        logger.info("Enable file ids %s response: %s", "|".join(keep_ids), enable_resp)
+
+    verify = session.get(
+        f"{base}/api/v2/torrents/files",
+        params={"hash": torrent_hash},
+        timeout=timeout_seconds,
+    )
+    if verify.status_code != 200:
+        logger.warning("Failed to verify file priorities for %s: %s", torrent_hash, verify.status_code)
+        return
+    files_after = verify.json() or []
+    retry_disable = []
+    retry_enable = []
+    for file in files_after:
+        file_id = file.get("index")
+        if file_id is None:
+            file_id = file.get("id")
+        if file_id is None:
+            continue
+        file_id_str = str(file_id)
+        priority = file.get("priority")
+        if file_id_str in keep_set:
+            if priority != 1:
+                retry_enable.append(file_id_str)
+        else:
+            if priority != 0:
+                retry_disable.append(file_id_str)
+    if retry_disable:
+        _set_qbittorrent_file_priority(session, base, torrent_hash, retry_disable, 0, timeout_seconds, per_file=True)
+    if retry_enable:
+        _set_qbittorrent_file_priority(session, base, torrent_hash, retry_enable, 1, timeout_seconds, per_file=True)
+    return True
+
+
 def _fetch_deluge_file_names(url, password, torrent_hash, timeout_seconds):
     ok, status = _deluge_json_rpc(
         url,
@@ -3190,6 +3367,29 @@ def _select_rtorrent_highest_version(url, torrent_hash, username, password, time
             file_entries,
             expected_update_number=expected_update_number,
             expected_version=expected_version,
+            exclude_russian=exclude_russian,
+        )
+    )
+    if not keep_ids:
+        return False
+    for file_id, _name in file_entries:
+        _set_rtorrent_file_priority(url, torrent_hash, file_id, 0, username, password, timeout_seconds)
+    for file_id in keep_ids:
+        _set_rtorrent_file_priority(url, torrent_hash, file_id, 1, username, password, timeout_seconds)
+    return True
+
+
+def _select_rtorrent_dlc_files(url, torrent_hash, username, password, timeout_seconds, exclude_russian):
+    file_names = poll_update_file_names(
+        lambda: _fetch_rtorrent_file_names(url, torrent_hash, username, password, timeout_seconds),
+        sleep_fn=time.sleep,
+    )
+    if not file_names:
+        return False
+    file_entries = list(enumerate(file_names))
+    keep_ids = set(
+        select_dlc_entry_ids(
+            file_entries,
             exclude_russian=exclude_russian,
         )
     )

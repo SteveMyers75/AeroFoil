@@ -4684,22 +4684,25 @@ def downloads_queue():
     title_id = data.get('title_id')
     protocol = data.get('protocol')
     update_only = bool(data.get('update_only', False))
+    dlc_only = bool(data.get('dlc_only', False))
     expected_version = data.get('expected_version')
     if not download_url:
         return jsonify({'success': False, 'message': 'Missing download URL.'})
     url_digest = hashlib.sha256(download_url.encode('utf-8', errors='ignore')).hexdigest()[:12]
     logger.debug(
-        'Queue download request: url_len=%s url_sha12=%s is_magnet=%s title_id=%s update_only=%s',
+        'Queue download request: url_len=%s url_sha12=%s is_magnet=%s title_id=%s update_only=%s dlc_only=%s',
         len(download_url),
         url_digest,
         download_url.lower().startswith('magnet:?'),
         title_id,
         update_only,
+        dlc_only,
     )
     ok, message = queue_download_url(
         download_url,
         expected_name=expected_name,
         update_only=update_only,
+        dlc_only=dlc_only,
         expected_version=expected_version,
         title_id=title_id,
         protocol=protocol,
