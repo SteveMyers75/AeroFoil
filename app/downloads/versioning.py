@@ -23,6 +23,21 @@ def _normalize_leaf_name(name):
     return text.rsplit("/", 1)[-1]
 
 
+def _extract_app_id_from_name(name):
+    leaf_name = _normalize_leaf_name(name)
+    if not leaf_name:
+        return None
+    match = re.search(r"\[([0-9A-Fa-f]{16})\]", leaf_name)
+    if not match:
+        return None
+    return match.group(1).upper()
+
+
+def _is_base_app_id_name(name):
+    app_id = _extract_app_id_from_name(name)
+    return bool(app_id and app_id.endswith("000"))
+
+
 def _expected_semantic_version(expected_version):
     try:
         value = int(expected_version)
@@ -68,10 +83,15 @@ def _collect_update_file_versions(file_entries, exclude_russian=False):
         lowered = name.lower()
         if exclude_russian and ("russian" in lowered or "rus" in lowered):
             continue
+        # Base-release filenames can include version-like tokens, but they are not updates.
+        if _is_base_app_id_name(name):
+            continue
         internal_version = extract_internal_update_version(name)
-        if internal_version is not None:
+        if internal_version is not None and internal_version > 0:
             internal_versions.append((internal_version, entry_id))
         for semantic_version in _extract_semantic_versions(name):
+            if semantic_version == (0, 0, 0):
+                continue
             semantic_versions.append((semantic_version, entry_id))
     return internal_versions, semantic_versions
 

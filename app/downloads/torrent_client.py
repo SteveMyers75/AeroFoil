@@ -3,7 +3,6 @@ import json
 import os
 import logging
 import re
-import secrets
 import time
 import xmlrpc.client
 import hmac
@@ -1694,7 +1693,7 @@ def _test_rtorrent(url, username=None, password=None, timeout_seconds=10):
     return True, f"rTorrent OK{f' (v{version_text})' if version_text else ''}."
 
 
-def _add_deluge(url, password, download_url, torrent_content, category, download_path, timeout_seconds, update_only, dlc_only, exclude_russian, expected_update_number, expected_version):
+def _add_deluge(url, password, download_url, torrent_content, category, download_path, timeout_seconds, update_only, dlc_only=False, exclude_russian=False, expected_update_number=None, expected_version=None):
     ok, logged_in = _deluge_login(url, password, timeout_seconds=timeout_seconds)
     if not ok or not logged_in:
         return False, "Deluge login failed.", None
@@ -1793,10 +1792,10 @@ def _add_rtorrent(
     download_path,
     timeout_seconds,
     update_only,
-    dlc_only,
-    exclude_russian,
-    expected_update_number,
-    expected_version,
+    dlc_only=False,
+    exclude_russian=False,
+    expected_update_number=None,
+    expected_version=None,
     expected_name=None,
 ):
     preflight_files = None
@@ -1880,7 +1879,7 @@ def _add_rtorrent(
     return True, "rTorrent accepted torrent.", torrent_hash
 
 
-def _add_qbittorrent(url, username, password, download_url, torrent_content, category, download_path, timeout_seconds, expected_name, update_only, dlc_only, exclude_russian, expected_update_number, expected_version):
+def _add_qbittorrent(url, username, password, download_url, torrent_content, category, download_path, timeout_seconds, expected_name, update_only, dlc_only=False, exclude_russian=False, expected_update_number=None, expected_version=None):
     base = url.rstrip("/")
     session = _new_client_session()
     if not _login_qbittorrent(session, base, username, password, timeout_seconds):
@@ -1892,7 +1891,6 @@ def _add_qbittorrent(url, username, password, download_url, torrent_content, cat
         files = {"torrents": (f"aerofoil_{int(time.time())}.torrent", torrent_content)}
     else:
         data["urls"] = download_url
-    temp_tag = None
     if update_only or dlc_only:
         if torrent_content:
             preflight_files = _get_torrent_file_list_from_content(torrent_content)
@@ -1906,17 +1904,15 @@ def _add_qbittorrent(url, username, password, download_url, torrent_content, cat
                 exclude_russian=exclude_russian,
             ):
                 return False, TORRENT_UPDATE_SELECTION_ERROR, None
-            temp_tag = f"aerofoil_update_{int(time.time())}_{secrets.token_hex(3)}"
         else:
             if not preflight_has_matching_dlc(
                 preflight_files,
                 exclude_russian=exclude_russian,
             ):
                 return False, TORRENT_DLC_SELECTION_ERROR, None
-            temp_tag = f"aerofoil_dlc_{int(time.time())}_{secrets.token_hex(3)}"
     if category:
         data["category"] = category
-    tags = _build_qbittorrent_tags(category, temp_tag)
+    tags = _build_qbittorrent_tags(category)
     if tags:
         data["tags"] = tags
     if update_only or dlc_only:
@@ -1960,10 +1956,6 @@ def _add_qbittorrent(url, username, password, download_url, torrent_content, cat
                 break
             time.sleep(1)
         torrent_hash = resolved_hash
-    if (update_only or dlc_only) and infohash_v1 and temp_tag:
-        torrent_hash = _find_qbittorrent_hash_by_tag_and_infohash(
-            session, base, temp_tag, infohash_v1, timeout_seconds
-        )
     if infohash_v1 and ((update_only or dlc_only) or not torrent_hash):
         torrent_hash = _find_qbittorrent_hash_by_infohash(session, base, infohash_v1, category, added_at, timeout_seconds)
         if torrent_hash:
@@ -2012,13 +2004,9 @@ def _add_qbittorrent(url, username, password, download_url, torrent_content, cat
             )
             no_match_error = TORRENT_DLC_SELECTION_ERROR
         if not selected:
-            if temp_tag:
-                _remove_qbittorrent_tag(session, base, torrent_hash, temp_tag, timeout_seconds)
             _remove_qbittorrent_with_session(session, base, torrent_hash, timeout_seconds)
             return False, no_match_error, None
         _resume_qbittorrent(session, base, torrent_hash, timeout_seconds)
-        if temp_tag:
-            _remove_qbittorrent_tag(session, base, torrent_hash, temp_tag, timeout_seconds)
     elif not torrent_hash:
         return False, "qBittorrent did not report the added torrent.", None
     elif exclude_russian and torrent_hash:
@@ -2026,7 +2014,7 @@ def _add_qbittorrent(url, username, password, download_url, torrent_content, cat
     return True, "qBittorrent accepted torrent.", torrent_hash
 
 
-def _add_transmission(url, username, password, download_url, torrent_content, category, download_path, timeout_seconds, expected_name, update_only, dlc_only, exclude_russian, expected_update_number, expected_version):
+def _add_transmission(url, username, password, download_url, torrent_content, category, download_path, timeout_seconds, expected_name, update_only, dlc_only=False, exclude_russian=False, expected_update_number=None, expected_version=None):
     base = url.rstrip("/")
     session = _new_client_session(username, password)
 
@@ -3049,12 +3037,10 @@ def _normalize_hash(session, base, torrent_hash, timeout_seconds):
     return items[0].get("hash") or torrent_hash
 
 
-def _build_qbittorrent_tags(category, temp_tag):
+def _build_qbittorrent_tags(category):
     tags = [AEROFOIL_MANAGED_TAG]
     if category:
         tags.append(category)
-    if temp_tag:
-        tags.append(temp_tag)
     return ",".join(dict.fromkeys(tags))
 
 
@@ -3073,36 +3059,6 @@ def _find_qbittorrent_hash_by_tag(session, base, tag, timeout_seconds):
         return None
     items.sort(key=lambda item: item.get("added_on", 0), reverse=True)
     return items[0].get("hash")
-
-
-def _remove_qbittorrent_tag(session, base, torrent_hash, tag, timeout_seconds):
-    if not torrent_hash or not tag:
-        return
-    session.post(
-        f"{base}/api/v2/torrents/removeTags",
-        data={"hashes": torrent_hash, "tags": tag},
-        timeout=timeout_seconds,
-    )
-
-
-def _find_qbittorrent_hash_by_tag_and_infohash(session, base, tag, infohash_v1, timeout_seconds):
-    if not tag or not infohash_v1:
-        return None
-    deadline = time.time() + 6
-    infohash_lower = infohash_v1.lower()
-    while time.time() < deadline:
-        resp = session.get(
-            f"{base}/api/v2/torrents/info",
-            params={"tag": tag, "sort": "added_on", "reverse": "true"},
-            timeout=timeout_seconds,
-        )
-        if resp.status_code == 200:
-            items = resp.json() or []
-            for item in items:
-                if (item.get("infohash_v1") or "").lower() == infohash_lower:
-                    return item.get("hash")
-        time.sleep(1)
-    return None
 
 
 def _find_recent_qbittorrent_hash(session, base, expected_name, category, timeout_seconds, added_after=None, require_match=False):
