@@ -2203,12 +2203,20 @@
         const updateSearchVersion = latestMissing?.version ?? latestKnownVersion?.version ?? null;
         const titleQuery = game.title_id_name || game.name || game.title_id || '';
         const updateButton = (canManageDownloads && game.title_id && updateSearchVersion !== null && updateSearchVersion !== undefined)
-            ? `
+            ? (game.has_latest_version
+                ? `
+                    <div class="d-inline-flex align-items-center gap-2 small text-success fw-semibold"
+                        role="status" aria-live="polite">
+                        <i class="bi bi-check-circle"></i>
+                        <span>Latest update already installed.</span>
+                    </div>
+                `
+                : `
                     <button type="button" class="btn btn-warning btn-sm manual-download-btn"
                         data-title-id="${game.title_id}" data-version="${updateSearchVersion}">
                         <i class="bi bi-cloud-arrow-down"></i> Search updates
                     </button>
-            `
+                `)
             : '';
         const baseButton = (canManageDownloads && titleQuery)
             ? `

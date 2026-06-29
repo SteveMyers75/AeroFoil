@@ -330,6 +330,42 @@ class QueueRoutingTests(unittest.TestCase):
         self.assertFalse(queue_download_mock.call_args.kwargs["update_only"])
         self.assertEqual(queue_download_mock.call_args.kwargs["expected_version"], 123)
 
+    @patch("app.downloads.manager.queue_download")
+    @patch("app.downloads.manager.load_settings")
+    @patch("app.downloads.manager._get_local_known_update_version", return_value=196608)
+    @patch("app.downloads.manager._get_highest_owned_update_version", return_value=196608)
+    def test_queue_download_url_rejects_duplicate_update_before_queueing(
+        self,
+        highest_owned_mock,
+        local_known_mock,
+        load_settings_mock,
+        queue_download_mock,
+    ):
+        load_settings_mock.return_value = {
+            "downloads": {
+                "torrent_client": {
+                    "type": "rtorrent",
+                    "url": "http://rtorrent.local",
+                    "username": "user",
+                    "password": "pass",
+                },
+            }
+        }
+
+        ok, message = queue_download_url(
+            "magnet:?xt=urn:btih:abcdef",
+            expected_name="Example Title Update",
+            update_only=True,
+            expected_version=196608,
+            title_id="0100EXAMPLE000000",
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(message, "duplicate update: 0100EXAMPLE000000 v196608 already known (latest v196608)")
+        queue_download_mock.assert_not_called()
+        highest_owned_mock.assert_called_once_with("0100EXAMPLE000000")
+        local_known_mock.assert_called_once_with("0100EXAMPLE000000")
+
     @patch("app.downloads.manager.pick_best_result")
     @patch("app.downloads.manager.ProwlarrClient")
     @patch("app.downloads.manager.titles_lib.get_game_info", return_value={"name": "Example Title"})
@@ -512,6 +548,35 @@ class QueueRoutingTests(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertEqual(message, "No matching results found.")
+
+    @patch("app.downloads.manager.queue_download")
+    @patch("app.downloads.manager._get_local_known_update_version", return_value=196608)
+    @patch("app.downloads.manager._get_highest_owned_update_version", return_value=196608)
+    def test_search_and_queue_rejects_duplicate_update_before_searching(
+        self,
+        highest_owned_mock,
+        local_known_mock,
+        queue_download_mock,
+    ):
+        ok, message = _search_and_queue(
+            client=object(),
+            update={"title_id": "0100EXAMPLE000000", "title_name": "Example Title", "version": 196608},
+            downloads={},
+            indexer_ids=[],
+            categories=[],
+            required_terms=[],
+            blacklist_terms=[],
+            min_seeders=0,
+            min_age_minutes=0,
+            search_limit=10,
+            allowed_protocols=["usenet"],
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(message, "duplicate update: 0100EXAMPLE000000 v196608 already known (latest v196608)")
+        queue_download_mock.assert_not_called()
+        highest_owned_mock.assert_called_once_with("0100EXAMPLE000000")
+        local_known_mock.assert_called_once_with("0100EXAMPLE000000")
 
     def test_filter_download_search_results_excludes_unconfigured_protocols(self):
         results = [

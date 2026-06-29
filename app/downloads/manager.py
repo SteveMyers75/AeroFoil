@@ -984,6 +984,15 @@ def queue_download_url(download_url, expected_name=None, update_only=False, expe
     client_cfg = _get_protocol_client_cfg(downloads, resolved_protocol)
     if not _is_protocol_client_configured(downloads, resolved_protocol):
         return False, f"No {resolved_protocol} client is configured."
+    if update_only and title_id and expected_version is not None:
+        try:
+            requested_version = int(expected_version)
+        except (TypeError, ValueError):
+            requested_version = None
+        if requested_version is not None:
+            known_highest = _get_known_update_version(title_id)
+            if known_highest >= requested_version:
+                return False, f"duplicate update: {str(title_id).strip().upper()} v{requested_version} already known (latest v{known_highest})"
     queue_update_only = bool(update_only and resolved_protocol != "usenet")
     ok, message, item_id = queue_download(
         resolved_protocol,
@@ -1039,6 +1048,14 @@ def _search_and_queue(
     key = f"{update['title_id']}:{update['version']}"
     if not allow_duplicates and _already_tracked(key):
         return False, "Update is already queued."
+    try:
+        requested_version = int(update.get("version"))
+    except (TypeError, ValueError):
+        requested_version = None
+    if requested_version is not None:
+        known_highest = _get_known_update_version(update["title_id"])
+        if known_highest >= requested_version:
+            return False, f"duplicate update: {update['title_id']} v{requested_version} already known (latest v{known_highest})"
 
     query_candidates = _build_queries(update)
     result = None
@@ -1522,6 +1539,16 @@ def _get_highest_owned_update_version(title_id):
         if app.get("app_version") is not None
     ]
     return max(owned_versions) if owned_versions else 0
+
+
+def _get_known_update_version(title_id):
+    try:
+        return max(
+            _get_highest_owned_update_version(title_id),
+            _get_local_known_update_version(title_id),
+        )
+    except Exception:
+        return 0
 
 
 def _build_completed_match_text(item):
