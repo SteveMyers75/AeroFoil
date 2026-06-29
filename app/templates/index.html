@@ -2219,12 +2219,20 @@
                 `)
             : '';
         const baseButton = (canManageDownloads && titleQuery)
-            ? `
+            ? (game.has_base
+                ? `
+                    <div class="d-inline-flex align-items-center gap-2 small text-success fw-semibold"
+                        role="status" aria-live="polite">
+                        <i class="bi bi-check-circle"></i>
+                        <span>Base game already in library.</span>
+                    </div>
+                `
+                : `
                     <button type="button" class="btn btn-warning btn-sm manual-base-download-btn"
                         data-title-id="${game.title_id}" data-title-query="${titleQuery}">
                         <i class="bi bi-box-seam"></i> Search base game
                     </button>
-            `
+                `)
             : '';
         const cascadeDeleteButton = (canManageDownloads && game.app_type === 'BASE' && game.has_owned_content)
             ? `

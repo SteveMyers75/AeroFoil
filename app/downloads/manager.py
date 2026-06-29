@@ -1551,6 +1551,11 @@ def _get_known_update_version(title_id):
         return 0
 
 
+def _should_remove_completed_torrent(client_cfg):
+    cfg = client_cfg or {}
+    return bool(cfg.get("remove_completed_torrents_on_finish", True))
+
+
 def _build_completed_match_text(item):
     src_path = str((item or {}).get("path") or "").strip()
     parts = [str((item or {}).get("name") or "").strip(), os.path.basename(src_path)]
@@ -1692,7 +1697,10 @@ def _process_tracked_completed_item_locked(key, info, bucket):
             identity = _get_pending_identity(match) or _get_pending_identity(info)
             if identity:
                 _get_completed_identities_locked().add(identity)
-            if matched_id:
+            if matched_id and not (
+                str(info.get("protocol") or "").strip().lower() == "torrent"
+                and not _should_remove_completed_torrent(bucket.get("client_cfg"))
+            ):
                 ok, message = remove_completed_download(
                     str(info.get("protocol") or "").strip().lower(),
                     bucket["client_cfg"],
@@ -1714,7 +1722,10 @@ def _process_tracked_completed_item_locked(key, info, bucket):
     identity = _get_pending_identity(match) or _get_pending_identity(info)
     if identity:
         _get_completed_identities_locked().add(identity)
-    if matched_id:
+    if matched_id and not (
+        str(info.get("protocol") or "").strip().lower() == "torrent"
+        and not _should_remove_completed_torrent(bucket.get("client_cfg"))
+    ):
         ok, message = remove_completed_download(
             str(info.get("protocol") or "").strip().lower(),
             bucket["client_cfg"],
@@ -1738,7 +1749,9 @@ def _process_untracked_completed_bucket_locked(protocol, bucket):
         moved_item_paths = _coerce_moved_paths(_adopt_untracked_completed_item(item))
         if moved_item_paths:
             matched_id = item.get("id") or item.get("hash")
-            if matched_id:
+            if matched_id and not (
+                protocol == "torrent" and not _should_remove_completed_torrent(bucket.get("client_cfg"))
+            ):
                 ok, message = remove_completed_download(protocol, bucket["client_cfg"], matched_id)
                 if not ok:
                     logger.warning("Failed to remove adopted %s item %s: %s", protocol, matched_id, message)

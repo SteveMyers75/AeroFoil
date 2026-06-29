@@ -327,6 +327,10 @@ def _normalize_download_settings(downloads):
         minimum=0,
         maximum=100000,
     )
+    merged['torrent_client']['remove_completed_torrents_on_finish'] = _coerce_bool(
+        raw_torrent_client.get('remove_completed_torrents_on_finish'),
+        default=(defaults.get('torrent_client', {}) or {}).get('remove_completed_torrents_on_finish', True),
+    )
     raw_usenet_client = dict(raw_downloads.get('usenet_client') or {})
     merged['usenet_client'] = _normalize_download_client_config(
         raw_usenet_client,

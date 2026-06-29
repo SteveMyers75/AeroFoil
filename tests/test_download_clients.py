@@ -1796,6 +1796,55 @@ class CompletedAdoptionTests(unittest.TestCase):
 
     @patch("app.downloads.manager.enqueue_organize_paths")
     @patch("app.downloads.manager.enqueue_cleanup_roots")
+    @patch("app.downloads.manager.remove_completed_download")
+    @patch("app.downloads.manager._move_completed_with_reason", return_value=("X:\\fixture-root\\Example Title [0100]\\Example Base.nsp", None))
+    @patch("app.downloads.manager.list_active_downloads")
+    @patch("app.downloads.manager.list_completed_downloads")
+    @patch("app.downloads.manager._get_completed_poll_targets")
+    @patch("app.downloads.manager._state_lock")
+    @patch("app.downloads.manager._state", {
+        "running": False,
+        "last_run": 0.0,
+        "pending": {},
+        "completed": set(),
+    })
+    def test_check_completed_keeps_torrent_seeding_when_configured(
+        self,
+        _state_lock_mock,
+        poll_targets_mock,
+        list_completed_mock,
+        list_active_mock,
+        move_completed_mock,
+        remove_completed_mock,
+        enqueue_cleanup_roots_mock,
+        enqueue_paths_mock,
+    ):
+        poll_targets_mock.return_value = [("torrent", {"type": "qbittorrent", "category": "aerofoil", "remove_completed_torrents_on_finish": False})]
+        list_active_mock.return_value = [ {
+            "id": "ABC123",
+            "hash": "ABC123",
+            "protocol": "torrent",
+            "client_type": "qbittorrent",
+            "name": "Example Release NSW-GRP",
+        } ]
+        list_completed_mock.return_value = [ {
+            "id": "ABC123",
+            "hash": "abc123",
+            "protocol": "torrent",
+            "client_type": "qbittorrent",
+            "name": "Example Release NSW-GRP",
+            "path": "X:\\fixture-root\\incoming\\Example Release NSW-GRP",
+        } ]
+
+        _check_completed({})
+
+        move_completed_mock.assert_called_once()
+        remove_completed_mock.assert_not_called()
+        enqueue_paths_mock.assert_called_once_with(["X:\\fixture-root\\Example Title [0100]\\Example Base.nsp"])
+        enqueue_cleanup_roots_mock.assert_called_once_with([])
+
+    @patch("app.downloads.manager.enqueue_organize_paths")
+    @patch("app.downloads.manager.enqueue_cleanup_roots")
     @patch("app.downloads.manager.remove_completed_download", return_value=(True, "ok"))
     @patch("app.downloads.manager._move_completed_with_reason", return_value=("X:\\fixture-root\\Example Title [0100]\\Updates\\v1245184\\Example Title.nsp", None))
     @patch("app.downloads.manager._infer_update_info_from_completed_item")

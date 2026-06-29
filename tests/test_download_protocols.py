@@ -72,8 +72,17 @@ class DownloadProtocolTests(unittest.TestCase):
         self.assertEqual(normalized["torrent_client"]["category"], "shared-tag")
         self.assertEqual(normalized["usenet_client"]["category"], "shared-tag")
         self.assertEqual(normalized["torrent_client"]["min_seeders"], 7)
+        self.assertTrue(normalized["torrent_client"]["remove_completed_torrents_on_finish"])
         self.assertEqual(normalized["usenet_client"]["min_age_minutes"], 0)
         self.assertEqual(normalized["prowlarr"]["search_limit"], 100)
+
+    def test_download_settings_allow_disabling_torrent_cleanup(self):
+        normalized = _normalize_download_settings({
+            "torrent_client": {
+                "remove_completed_torrents_on_finish": False,
+            },
+        })
+        self.assertFalse(normalized["torrent_client"]["remove_completed_torrents_on_finish"])
 
     @patch.object(ProwlarrClient, "_get")
     def test_prowlarr_search_sends_type_and_nonzero_limit(self, get_mock):

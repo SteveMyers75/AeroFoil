@@ -137,6 +137,7 @@ DEFAULT_SETTINGS = {
             "category": "aerofoil",
             "download_path": "",
             "min_seeders": 2,
+            "remove_completed_torrents_on_finish": True,
         },
         "usenet_client": {
             "type": "sabnzbd",

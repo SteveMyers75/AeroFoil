@@ -1011,6 +1011,11 @@
                             <label for="torrentClientMinSeedersInput" class="form-label">Minimum seeders</label>
                             <input type="number" min="0" class="form-control" id="torrentClientMinSeedersInput">
                         </div>
+                        <div class="form-check form-switch mb-3">
+                            <input class="form-check-input" type="checkbox" id="torrentClientRemoveOnFinishCheck">
+                            <label class="form-check-label" for="torrentClientRemoveOnFinishCheck">Remove finished torrents from client</label>
+                            <div class="form-text">Disable this to keep finished torrents in the client for seeding.</div>
+                        </div>
                         <div class="d-flex align-items-center gap-3">
                             <button type="button" id="testTorrentClientBtn" class="btn btn-outline-secondary"
                                 onClick='testTorrentClientSettings()'>Test torrent client</button>
@@ -2579,7 +2584,8 @@
                 password: getInputVal("torrentClientPasswordInput"),
                 api_key: getInputVal("torrentClientApiKeyInput"),
                 download_path: getInputVal("torrentClientPathInput"),
-                min_seeders: parseInt(getInputVal("torrentClientMinSeedersInput"), 10)
+                min_seeders: parseInt(getInputVal("torrentClientMinSeedersInput"), 10),
+                remove_completed_torrents_on_finish: getCheckboxStatus("torrentClientRemoveOnFinishCheck")
             },
             usenet_client: {
                 type: getInputVal("usenetClientTypeSelect"),
@@ -3025,6 +3031,7 @@
             setInputVal("torrentClientApiKeyInput", torrentSettings['api_key'] || '');
             setInputVal("torrentClientPathInput", torrentSettings['download_path'] || '');
             setInputVal("torrentClientMinSeedersInput", torrentSettings['min_seeders'] ?? 2);
+            $("#torrentClientRemoveOnFinishCheck").prop("checked", torrentSettings['remove_completed_torrents_on_finish'] !== false);
             usenetSettings = downloadsSettings['usenet_client'] || {};
             setInputVal("usenetClientUrlInput", usenetSettings['url'] || '');
             setInputVal("usenetClientUserInput", usenetSettings['username'] || '');
