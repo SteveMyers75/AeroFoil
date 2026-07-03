@@ -258,9 +258,14 @@ def pick_best_result(results, title_id=None, version=None, min_seeders=0, min_ag
         filtered = [item for item in filtered if str(item.get("protocol") or "").strip().lower() in allowed]
     if require_exact_version and version is not None:
         expected_version = int(version)
+        # Only drop results whose title advertises a *different* internal version
+        # token. Releases whose title carries no parseable internal version (the
+        # common case for scene names that use a marketing version like "v1.2.0")
+        # are kept here; the exact update file is enforced later at download time
+        # via versioning.select_update_entry_ids(expected_version=...).
         filtered = [
             item for item in filtered
-            if _extract_internal_version_token(item.get("title")) == expected_version
+            if _extract_internal_version_token(item.get("title")) in (None, expected_version)
         ]
     if not filtered:
         return None
