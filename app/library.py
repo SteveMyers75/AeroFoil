@@ -1115,6 +1115,16 @@ def _sanitize_relative_path(path_value, fallback='Other'):
         return _sanitize_component(fallback)
     return os.path.join(*clean_parts)
 
+def _is_base_dir_template(rendered):
+    # True when a rendered folder template refers only to the current/base
+    # directory (e.g. ".", "./", ".."). Such a template means "no subfolder";
+    # the file belongs directly in the library base directory. Without this the
+    # "." used by the Flat preset would be stripped by _sanitize_relative_path
+    # and fall through to the 'Other' fallback.
+    raw = str(rendered or '').strip().replace('\\', '/')
+    parts = [part for part in raw.split('/') if part]
+    return bool(parts) and all(part in ('.', '..') for part in parts)
+
 def _safe_int(value, default=0):
     try:
         return int(value)
@@ -1630,15 +1640,22 @@ def _build_destination(library_path, file_entry, app, title_name, dlc_name, acti
 
     folder_rel = _render_template(folder_tpl, template_vars_common)
     if not folder_rel:
+        # No folder template configured -> default to a per-title folder.
         folder_rel = _sanitize_component(f"{safe_title} [{safe_title_id}]")
-    folder_rel = _sanitize_relative_path(folder_rel, fallback='Other')
+        folder_rel = _sanitize_relative_path(folder_rel, fallback='Other')
+    elif _is_base_dir_template(folder_rel):
+        # Template explicitly targets the library base directory (e.g. "." in the
+        # Flat preset) -> place the file directly under library_path, no subfolder.
+        folder_rel = ''
+    else:
+        folder_rel = _sanitize_relative_path(folder_rel, fallback='Other')
 
     filename = _render_template(filename_tpl, template_vars_filename)
     if not filename:
         filename = file_entry.filename or f"{safe_title} [{safe_title_id}] [UNKNOWN].{safe_ext}"
     filename = _sanitize_component(filename)
 
-    folder = os.path.join(library_path, folder_rel)
+    folder = os.path.join(library_path, folder_rel) if folder_rel else library_path
     return folder, filename
 
 def organize_library(dry_run=False, verbose=False, detail_limit=200):
