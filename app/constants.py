@@ -112,6 +112,7 @@ DEFAULT_SETTINGS = {
         "interval_minutes": 60,
         "category": "aerofoil",
         "required_terms": [],
+        "required_terms_match": "all",
         "blacklist_terms": [],
         "search_prefix": "",
         "search_suffix": "",

@@ -197,7 +197,7 @@ def _extract_internal_version_token(text):
     return extract_internal_update_version(text)
 
 
-def filter_results(results, min_seeders=0, min_age_minutes=0, required_terms=None, blacklist_terms=None):
+def filter_results(results, min_seeders=0, min_age_minutes=0, required_terms=None, required_terms_match="all", blacklist_terms=None):
     required_terms = [_normalize_text(t) for t in (required_terms or []) if t]
     blacklist_terms = [_normalize_text(t) for t in (blacklist_terms or []) if t]
     filtered = []
@@ -210,8 +210,13 @@ def filter_results(results, min_seeders=0, min_age_minutes=0, required_terms=Non
             age_minutes = result.get("age_minutes")
             if age_minutes is None or int(age_minutes) < int(min_age_minutes):
                 continue
-        if required_terms and not all(term in title for term in required_terms):
-            continue
+        if required_terms:
+            matches_required_terms = [term in title for term in required_terms]
+            if required_terms_match == "any":
+                if not any(matches_required_terms):
+                    continue
+            elif not all(matches_required_terms):
+                continue
         if blacklist_terms and any(term in title for term in blacklist_terms):
             continue
         filtered.append(result)
@@ -245,12 +250,13 @@ def _score_result(result, title_id=None, version=None):
     return score
 
 
-def pick_best_result(results, title_id=None, version=None, min_seeders=0, min_age_minutes=0, required_terms=None, blacklist_terms=None, allowed_protocols=None, require_exact_version=False):
+def pick_best_result(results, title_id=None, version=None, min_seeders=0, min_age_minutes=0, required_terms=None, required_terms_match="all", blacklist_terms=None, allowed_protocols=None, require_exact_version=False):
     filtered = filter_results(
         results,
         min_seeders=min_seeders,
         min_age_minutes=min_age_minutes,
         required_terms=required_terms,
+        required_terms_match=required_terms_match,
         blacklist_terms=blacklist_terms,
     )
     allowed = {str(item or "").strip().lower() for item in (allowed_protocols or []) if str(item or "").strip()}

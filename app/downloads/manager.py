@@ -142,6 +142,7 @@ def filter_download_search_results(results, downloads, blacklist_terms=None):
         min_seeders=_get_torrent_min_seeders(downloads),
         min_age_minutes=_get_usenet_min_age_minutes(downloads),
         required_terms=downloads.get("required_terms") or [],
+        required_terms_match=downloads.get("required_terms_match") or "all",
         blacklist_terms=(downloads.get("blacklist_terms") or []) + (blacklist_terms or []),
     )
     allowed_protocols = _get_configured_protocols(downloads)
@@ -838,6 +839,7 @@ def _process_downloads(downloads, scan_cb=None, post_cb=None):
     indexer_ids = prowlarr_cfg.get("indexer_ids") or []
     categories = prowlarr_cfg.get("categories") or []
     required_terms = downloads.get("required_terms") or []
+    required_terms_match = downloads.get("required_terms_match") or "all"
     blacklist_terms = downloads.get("blacklist_terms") or []
     min_seeders = _get_torrent_min_seeders(downloads)
     min_age_minutes = _get_usenet_min_age_minutes(downloads)
@@ -850,6 +852,7 @@ def _process_downloads(downloads, scan_cb=None, post_cb=None):
             indexer_ids=indexer_ids,
             categories=categories,
             required_terms=required_terms,
+            required_terms_match=required_terms_match,
             blacklist_terms=blacklist_terms,
             min_seeders=min_seeders,
             min_age_minutes=min_age_minutes,
@@ -893,6 +896,7 @@ def manual_search_update(title_id, version):
         indexer_ids=prowlarr_cfg.get("indexer_ids") or [],
         categories=prowlarr_cfg.get("categories") or [],
         required_terms=downloads.get("required_terms") or [],
+        required_terms_match=downloads.get("required_terms_match") or "all",
         blacklist_terms=downloads.get("blacklist_terms") or [],
         min_seeders=_get_torrent_min_seeders(downloads),
         min_age_minutes=_get_usenet_min_age_minutes(downloads),
@@ -951,6 +955,7 @@ def search_update_options(title_id, version, limit=20):
                 min_seeders=min_seeders,
                 min_age_minutes=min_age_minutes,
                 required_terms=downloads.get("required_terms") or [],
+                required_terms_match=downloads.get("required_terms_match") or "all",
                 blacklist_terms=downloads.get("blacklist_terms") or [],
                 allowed_protocols=allowed_protocols,
             ) is not None
@@ -1043,6 +1048,7 @@ def _search_and_queue(
     min_seeders,
     min_age_minutes,
     search_limit,
+    required_terms_match="all",
     allow_duplicates=True,
     allowed_protocols=None,
     require_exact_version=True,
@@ -1070,6 +1076,7 @@ def _search_and_queue(
             min_seeders=min_seeders,
             min_age_minutes=min_age_minutes,
             required_terms=required_terms,
+            required_terms_match=required_terms_match,
             blacklist_terms=blacklist_terms,
             allowed_protocols=allowed_protocols,
             require_exact_version=require_exact_version,

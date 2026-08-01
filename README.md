@@ -7,26 +7,45 @@
 [![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/gGy7hWxJeP)
 
 
-AeroFoil is a Personal library manager that turns your library into a fully customizable, self-hosted Shop. The goal of this project is to manage your library, identify any missing content (DLCs or updates) and provide a user friendly way to browse your content. Some of the features include:
+AeroFoil is a Personal library manager that turns your library into a fully customizable, self-hosted Remote. The goal of this project is to manage your library, identify any missing content (DLCs or updates) and provide a user friendly way to browse your content. Some of the features include:
 
  - multi user authentication
  - web interface for configuration
  - web interface for browsing the library
  - content identification
- - shop customization
+ - remote customization
 
 The project is still in development, expect things to break or change without notice.
 
-# Table of Contents
+## Index
+
 - [Installation](#installation)
+  - [Docker](#using-docker)
+  - [Environment variables](#environment-variables)
+  - [Python](#using-python)
+  - [CyberFoil setup](#cyberfoil-setup)
+  - [Save backups](#save-backups-save-sync)
+  - [Requests](#requests)
 - [Usage](#usage)
+  - [Library](#library-administration)
+  - [Content rating controls](#content-rating-controls-esrb)
+  - [Game information](#game-info-titledb)
+  - [Automatic downloads](#automatic-update-downloads-prowlarr--download-clients)
+  - [Titles configuration](#titles-configuration)
+  - [Remote customization](#remote-customization)
+- [Deployment notes](#deployment-notes)
+  - [Reverse proxy](#reverse-proxy-real-client-ip-activity-page)
+  - [TitleDB sources](#titledb-sources-and-downloads)
 - [Roadmap](#roadmap)
 
-# Installation
+<a id="installation"></a>
+<details open>
+<summary><strong>Installation</strong></summary>
+
 ## Using Docker
 ### Docker run
 
-Running this command will start the shop on port `8465` with the library in `/your/game/directory`:
+Running this command will start the remote on port `8465` with the library in `/your/game/directory`:
 
     docker run -d -p 8465:8465 \
       -v /your/game/directory:/games \
@@ -35,7 +54,7 @@ Running this command will start the shop on port `8465` with the library in `/yo
       --name aerofoil \
       luketanti/aerofoil:latest
 
-The shop is now accessible with your computer/server IP and port, i.e. `http://localhost:8465` from the same computer or `http://192.168.1.100:8465` from a device in your network.
+The remote is now accessible with your computer/server IP and port, i.e. `http://localhost:8465` from the same computer or `http://192.168.1.100:8465` from a device in your network.
 
 ### Docker compose
 Create a file named `docker-compose.yml` with the following content:
@@ -128,10 +147,10 @@ To update the app you will need to pull the latest commits.
 By default, `python app/app.py` runs AeroFoil with the Waitress WSGI server (production-oriented). Set `AEROFOIL_USE_FLASK_DEV=true` only if you need the Flask development server for debugging.
 
 ## CyberFoil setup
-In CyberFoil, set the AeroFoil eShop URL in Settings:
- - URL: `http://<server-ip>:8465` (or `https://` if using an SSL-enabled reverse proxy)
- - Username: username as created in AeroFoil settings (if the shop is Private)
- - Password: password as created in AeroFoil settings (if the shop is Private)
+In CyberFoil, set the AeroFoil Remote URL in Settings:
+ - URL: `http://<server-ip>:8465` (or `https://` if using an SSL-enabled reverse proxy) and port 443
+ - Username: username as created in AeroFoil settings (if the remote is private)
+ - Password: password as created in AeroFoil settings (if the remote is private)
 
 ## Save backups (Save Sync)
 AeroFoil supports per-user save backup management when the user has the **Backup** flag enabled:
@@ -155,11 +174,36 @@ AeroFoil supports title request tracking across users:
 - Admins can review all requests, run download search from request entries, deny requests, and delete requests.
 - Open requests are automatically closed when the title becomes available in the library.
 
-# Usage
-Once AeroFoil is running you can access the Shop Web UI by navigating to the `http://<computer/server IP>:8465`.
+</details>
+
+<a id="usage"></a>
+<details open>
+<summary><strong>Usage</strong></summary>
+
+Once AeroFoil is running you can access the Remote Web UI by navigating to the `http://<computer/server IP>:8465`.
 
 ## User administration
-AeroFoil requires an `admin` user to be created to enable Authentication for your Shop. Go to the `Settings` to create a first user that will have admin rights. Then you can add more users to your shop the same way.
+AeroFoil requires an `admin` user to be created to enable Authentication for your Remote. Go to the `Settings` to create a first user that will have admin rights. Then you can add more users to your remote the same way.
+
+## Content rating controls (ESRB)
+AeroFoil can restrict each user's catalog and downloads using the ESRB age rating supplied by TitleDB. The restriction is applied per user: users without a maximum rating remain unrestricted.
+
+The available maximum ratings are:
+
+- `Everyone (E)` — 0
+- `Everyone 10+ (E10+)` — 10
+- `Teen (T)` — 13
+- `Mature 17+ (M)` — 17
+- `Adults Only (AO)` — 18
+
+When a user has a maximum rating, titles above that limit are hidden from the web library, discovery sections, and the Tinfoil/Remote catalog. Direct download requests for blocked content are also rejected.
+
+### Setup
+1. Open **Users** and create or edit the account you want to restrict.
+2. Set **Max rating** to the highest ESRB tier that user may access. Select **No limit** to leave the user unrestricted.
+3. In **Settings**, choose whether **Hide unrated titles from age-capped users** should remain enabled. It is enabled by default and recommended for child accounts.
+
+With that option enabled, homebrew, unidentified files, and titles without a known TitleDB rating are hidden from users who have a maximum rating. Disable it only if you want unrated content to remain visible to those users.
 
 ## Library administration
 In the `Settings` page under the `Library` section, you can add directories containing your content. You can then manually trigger the library scan: AeroFoil will scan the content of the directories and try to identify every supported file (currently `nsp`, `nsz`, `xci`, `xcz`).
@@ -208,13 +252,16 @@ AeroFoil can automatically search for missing updates using Prowlarr, route torr
 1. Open the `Settings` page and scroll to the **Downloads** section.
 2. Enable **Automatic downloads** and configure:
    - **Search interval (minutes)**: how often AeroFoil will look for missing updates.
-   - **Minimum seeders**: skip low‑availability results.
-   - **Required terms / Blacklist terms**: fine‑tune search matches (comma separated).
+   - **Minimum seeders**: skip torrent results below this count. Leave blank or set `0` to include zero-seeder results.
+   - **Required terms**: case-insensitive, comma-separated title filters. **All terms** (the default) requires every term; **Any term** accepts a result containing at least one term. Leave this field blank to avoid title-term filtering.
+   - **Blacklist terms**: case-insensitive, comma-separated terms that always exclude a result.
+   - **Search prefix / suffix**: optional text added to search queries. Both are blank by default.
    - **Torrent category/tag**: used to tag managed torrent downloads (default `aerofoil`).
 3. Configure **Prowlarr**:
    - **Prowlarr URL** (e.g. `http://localhost:9696`)
    - **API Key**
-   - **Indexer IDs** (optional, comma separated). If set, AeroFoil will limit searches to these indexers.
+   - **Indexer IDs** (optional, comma separated). If set, AeroFoil will limit searches to these indexers; leave blank to use all enabled Prowlarr indexers.
+   - **Categories** (optional, comma separated). Leave blank to search without a Prowlarr category restriction.
    - Use **Test Prowlarr** to validate connectivity and indexer IDs (missing IDs show as warnings).
 4. Configure **Torrent Client**:
    - **Client**: multiple clients are supported, including qBittorrent, Transmission, Deluge, rTorrent, and others listed in the Settings UI.
@@ -240,24 +287,29 @@ AeroFoil can automatically search for missing updates using Prowlarr, route torr
 - Successfully imported items are removed from the pending queue and no longer shown in Downloads (this page is for active/pending state, not historical completed items).
 
 ## Titles configuration
-In the `Settings` page under the `Titles` section is where you specify the language of your Shop (currently the same for all users).
+In the `Settings` page under the `Titles` section is where you specify the language of your Remote (currently the same for all users).
 
 This is where you can also upload your `console keys` file to enable content identification using decryption, instead of only using filenames. If you do not provide keys, AeroFoil expects the files to be named `[APP_ID][vVERSION]`.
 
-## Shop customization
-In the `Settings` page under the `Shop` section is where you customize your Shop, like the message displayed when successfully accessing the shop from Tinfoil or if the shop is private or public.
+## Remote customization
+In the `Settings` page under the Remote section is where you customize your Remote, including the message displayed when accessing the remote from Tinfoil and whether the remote is private or public.
 MOTD supports variables and optional API-backed variables:
 - Built-in variables: `{username}`, `{user_id}`, `{is_admin}`, `{shop_access}`, `{backup_access}`, `{frozen}`, `{client_uid}`, `{remote_addr}`, `{user_agent}`, `{host}`, `{path}`, `{date}`, `{time}`, `{datetime}`, `{timestamp}`.
 - Optional custom MOTD API URL:
   - Plain text response is exposed as `{api_text}`.
   - JSON object responses expose `{api_<key>}` for each key (for example `{"reason":"..."}` gives `{api_reason}`).
-- `Enable MOTD` can disable MOTD output entirely while keeping other shop behavior unchanged.
-The `Encrypt shop` option only affects the Tinfoil payload; the web interface and admin UI remain accessible as normal.
+- `Enable MOTD` can disable MOTD output entirely while keeping other remote behavior unchanged.
+The encryption option only affects the Tinfoil payload; the web interface and admin UI remain accessible as normal.
 Encryption uses the Tinfoil public key and AES, and requires the `pycryptodome` dependency.
 `Fast transfer mode` prioritizes throughput for `/api/get_game` by skipping per-chunk transfer accounting; Activity live byte counters and exact transfer bytes may be less precise.
 The same section also includes login protection controls: temporary IP lockout after repeated failed auth attempts, a permanent IP/CIDR blacklist, and an admin view to list and unlock current temporary lockouts.
 
-# Deployment notes
+</details>
+
+<a id="deployment-notes"></a>
+<details open>
+<summary><strong>Deployment notes</strong></summary>
+
 - Recommended volumes: `/games`, `/app/config`, and `/app/data`.
 - Optional conversion staging volume: `/app/conversion-tmp` (recommended on SSD when libraries are on slower pools).
 - Map port `8465` from the container to any host port you prefer.
@@ -293,7 +345,12 @@ Set `trusted_proxies` to your proxy IP(s) and/or your Docker network subnet so t
 - The descriptions/screenshot dataset (`US.en.json`) is downloaded to `/app/data/titledb/US.en.json` and is not part of the TitleDB artifacts zip.
 - The TitleDB artifacts zip may be very large (multi-GB) depending on the upstream workflow output.
 
-# Roadmap
+</details>
+
+<a id="roadmap"></a>
+<details open>
+<summary><strong>Roadmap</strong></summary>
+
 Planned feature, in no particular order.
  - Library browser:
     - [x] Add "details" view for every content, to display versions etc
@@ -301,8 +358,8 @@ Planned feature, in no particular order.
     - [x] Rename and organize library after content identification
     - [x] Delete older updates
     - [x] Automatic nsp/xci -> nsz conversion
- - Shop customization:
-    - [x] Encrypt shop
+ - Remote customization:
+    - [x] Encrypt remote
  - Saves manager:
     - [ ] Automatically discover Switch device based on Tinfoil connection
     - [x] Per-user save backup storage and access control (Backup flag required)
@@ -311,3 +368,5 @@ Planned feature, in no particular order.
  - External services:
     - [x] Prowlarr integration for automatic update downloads (via torrent and usenet clients)
     - [x] Automated update downloader pipeline (search -> download -> ingest)
+
+</details>

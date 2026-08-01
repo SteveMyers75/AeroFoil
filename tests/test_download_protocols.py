@@ -76,6 +76,12 @@ class DownloadProtocolTests(unittest.TestCase):
         self.assertTrue(normalized["torrent_client"]["remove_completed_torrents_on_finish"])
         self.assertEqual(normalized["usenet_client"]["min_age_minutes"], 0)
         self.assertEqual(normalized["prowlarr"]["search_limit"], 100)
+        self.assertEqual(normalized["required_terms_match"], "all")
+
+    def test_download_settings_reject_invalid_required_terms_match_mode(self):
+        normalized = _normalize_download_settings({"required_terms_match": "unsupported"})
+
+        self.assertEqual(normalized["required_terms_match"], "all")
 
     def test_download_settings_allow_disabling_torrent_cleanup(self):
         normalized = _normalize_download_settings({
@@ -127,6 +133,27 @@ class DownloadProtocolTests(unittest.TestCase):
         ]
         filtered = filter_results(results, blacklist_terms=["update"])
         self.assertEqual([item["title"] for item in filtered], ["Sample Base Game"])
+
+    def test_filter_results_matches_any_required_term_when_configured(self):
+        results = [
+            {"title": "Example alpha release", "protocol": "torrent", "seeders": 10},
+            {"title": "Example beta release", "protocol": "torrent", "seeders": 10},
+            {"title": "Example other release", "protocol": "torrent", "seeders": 10},
+        ]
+
+        filtered = filter_results(results, required_terms=["alpha", "beta"], required_terms_match="any")
+
+        self.assertEqual([item["title"] for item in filtered], ["Example alpha release", "Example beta release"])
+
+    def test_filter_results_requires_all_terms_by_default(self):
+        results = [
+            {"title": "Example alpha release", "protocol": "torrent", "seeders": 10},
+            {"title": "Example alpha beta release", "protocol": "torrent", "seeders": 10},
+        ]
+
+        filtered = filter_results(results, required_terms=["alpha", "beta"])
+
+        self.assertEqual([item["title"] for item in filtered], ["Example alpha beta release"])
 
     def test_select_dlc_file_indices_prefers_dlc_named_files(self):
         file_names = [

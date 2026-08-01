@@ -293,6 +293,8 @@ def _normalize_download_settings(downloads):
     raw_downloads = downloads if isinstance(downloads, dict) else {}
     merged = defaults.copy()
     merged.update(raw_downloads)
+    required_terms_match = str(merged.get('required_terms_match') or 'all').strip().lower()
+    merged['required_terms_match'] = required_terms_match if required_terms_match in ('all', 'any') else 'all'
     legacy_min_seeders = raw_downloads.get('min_seeders')
     shared_category = str(
         merged.get('category')

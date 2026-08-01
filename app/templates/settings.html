@@ -912,11 +912,19 @@
                             </div>
                         </div>
                         <div class="row g-3 mb-3">
-                            <div class="col-md-6">
+                            <div class="col-md-4">
                                 <label for="downloadsRequiredTermsInput" class="form-label">Required terms (comma separated)</label>
                                 <input type="text" class="form-control" id="downloadsRequiredTermsInput">
                             </div>
-                            <div class="col-md-6">
+                            <div class="col-md-4">
+                                <label for="downloadsRequiredTermsMatchInput" class="form-label">Required-term match</label>
+                                <select class="form-select" id="downloadsRequiredTermsMatchInput">
+                                    <option value="all">All terms</option>
+                                    <option value="any">Any term</option>
+                                </select>
+                                <div class="form-text">All terms preserves the existing behavior.</div>
+                            </div>
+                            <div class="col-md-4">
                                 <label for="downloadsBlacklistTermsInput" class="form-label">Blacklist terms (comma separated)</label>
                                 <input type="text" class="form-control" id="downloadsBlacklistTermsInput">
                             </div>
@@ -2590,6 +2598,7 @@
             interval_minutes: parseInt(getInputVal("downloadsIntervalInput"), 10),
             category: getInputVal("downloadsCategoryInput"),
             required_terms: splitTerms(getInputVal("downloadsRequiredTermsInput")),
+            required_terms_match: getInputVal("downloadsRequiredTermsMatchInput"),
             blacklist_terms: splitTerms(getInputVal("downloadsBlacklistTermsInput")),
             search_prefix: getInputVal("downloadsSearchPrefixInput"),
             search_suffix: getInputVal("downloadsSearchSuffixInput"),
@@ -3033,6 +3042,7 @@
             populateDownloadClientTypeSelects(downloadsSettings);
             setInputVal("downloadsIntervalInput", downloadsSettings['interval_minutes']);
             setInputVal("downloadsRequiredTermsInput", (downloadsSettings['required_terms'] || []).join(', '));
+            setInputVal("downloadsRequiredTermsMatchInput", downloadsSettings['required_terms_match'] || 'all');
             setInputVal("downloadsBlacklistTermsInput", (downloadsSettings['blacklist_terms'] || []).join(', '));
             setInputVal("downloadsSearchPrefixInput", downloadsSettings['search_prefix'] || '');
             setInputVal("downloadsSearchSuffixInput", downloadsSettings['search_suffix'] || '');
