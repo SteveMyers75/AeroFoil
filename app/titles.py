@@ -97,6 +97,7 @@ def keys_loaded():
 
 app_id_regex = r"\[([0-9A-Fa-f]{16})\]"
 version_regex = r"\[v(\d+)\]"
+update_tag_regex = r"\[UPDATE\]"
 
 # Global variables for TitleDB data
 identification_in_progress_count = 0
@@ -1200,6 +1201,15 @@ def identify_file_from_filename(filename):
         errors.append('Could not determine App ID from filename, pattern [APPID] not found. Title ID and Type cannot be derived.')
     else:
         title_id, app_type = identify_appId(app_id)
+        # Legacy update names sometimes contain the base title ID (ending in
+        # 000) together with an explicit [UPDATE] tag. An Update app ID is the
+        # only type that can be derived safely from that base ID: it ends in 800.
+        # Do not infer DLC IDs from tags because a base title ID does not contain
+        # enough information to identify a specific DLC package.
+        if app_type == APP_TYPE_BASE and re.search(update_tag_regex, filename, re.IGNORECASE):
+            app_id = f'{app_id[:-3]}800'
+            title_id = f'{app_id[:-3]}000'
+            app_type = APP_TYPE_UPD
 
     version = get_version_from_filename(filename)
     if version is None:
