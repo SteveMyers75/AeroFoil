@@ -484,11 +484,12 @@ shop_root_cache_lock = threading.Lock()
 shop_root_cache = {
     'state_token': None,
     'files': None,
+    'files_enriched': None,
     'encrypted': {},
 }
 _SHOP_ROOT_ENCRYPTED_CACHE_LIMIT = 8
 _SHOP_SECTIONS_ENCRYPTED_CACHE_LIMIT = 8
-_TITLES_METADATA_CACHE_VERSION = 3
+_TITLES_METADATA_CACHE_VERSION = 4
 titles_metadata_cache_lock = threading.Lock()
 titles_metadata_cache = {
     'version': _TITLES_METADATA_CACHE_VERSION,
@@ -497,6 +498,7 @@ titles_metadata_cache = {
     'title_name_map': {},
     'genre_title_ids': {},
     'unrecognized_title_ids': set(),
+    'rating_by_title_id': {},
 }
 titles_total_cache_lock = threading.Lock()
 titles_total_cache = {}
@@ -701,6 +703,7 @@ def _invalidate_shop_root_cache():
     with shop_root_cache_lock:
         shop_root_cache['state_token'] = None
         shop_root_cache['files'] = None
+        shop_root_cache['files_enriched'] = None
         shop_root_cache['encrypted'] = {}
 
 def _get_titledb_aware_state_token():
@@ -749,35 +752,111 @@ def _store_titles_total(cache_key, total):
             for key, value in ordered:
                 titles_total_cache[key] = value
 
-def _get_cached_shop_files():
+def _build_enriched_shop_files():
+    """Build the shop file list annotated with each file's ESRB rating.
+
+    `rating` is the max known rating among the file's titles (most restrictive),
+    or None. `unrated` is True when any associated title is unrated or the file
+    is unidentified (no title). Used to apply the per-user age filter.
+    """
+    rows = (
+        db.session.query(
+            Files.id.label('file_id'),
+            Files.filename.label('filename'),
+            Files.size.label('size'),
+            Titles.title_id.label('title_id'),
+        )
+        .select_from(Files)
+        .outerjoin(app_files, app_files.c.file_id == Files.id)
+        .outerjoin(Apps, Apps.id == app_files.c.app_id)
+        .outerjoin(Titles, Titles.id == Apps.title_id)
+        .all()
+    )
+
+    files = {}
+    order = []
+    for row in rows:
+        fid = row.file_id
+        meta = files.get(fid)
+        if meta is None:
+            meta = {'filename': row.filename, 'size': int(row.size or 0), 'title_ids': set()}
+            files[fid] = meta
+            order.append(fid)
+        tid = (row.title_id or '').strip().upper()
+        if tid:
+            meta['title_ids'].add(tid)
+
+    rating_cache = {}
+    enriched = []
+    with titles.titledb_session() as titledb_loaded:
+        def _rating(tid):
+            if not titledb_loaded:
+                return None
+            if tid not in rating_cache:
+                info = titles.get_game_info(tid) or {}
+                rating_cache[tid] = _coerce_rating_value(info.get('rating'))
+            return rating_cache[tid]
+
+        for fid in order:
+            meta = files[fid]
+            tids = meta['title_ids']
+            if not tids:
+                file_rating = None
+                unrated = True
+            else:
+                ratings = [_rating(t) for t in tids]
+                unrated = any(r is None for r in ratings)
+                known = [r for r in ratings if r is not None]
+                file_rating = max(known) if known else None
+            enriched.append({
+                'url': f"/api/get_game/{fid}#{meta['filename']}",
+                'size': meta['size'],
+                'rating': file_rating,
+                'unrated': unrated,
+            })
+    return enriched
+
+
+def _enriched_file_allowed(entry, cap, block_unrated):
+    if cap is None:
+        return True
+    if entry.get('unrated') and block_unrated:
+        return False
+    rating = entry.get('rating')
+    if rating is None:
+        return True
+    return rating <= cap
+
+
+def _get_cached_shop_files(cap=None, block_unrated=True):
     state_token = get_library_cache_state_token()
     with shop_root_cache_lock:
-        if (
-            shop_root_cache.get('state_token') == state_token
-            and isinstance(shop_root_cache.get('files'), list)
-        ):
-            return shop_root_cache['files']
+        cached = shop_root_cache.get('files_enriched')
+        if shop_root_cache.get('state_token') == state_token and isinstance(cached, list):
+            enriched = cached
+        else:
+            enriched = None
 
-    rows = db.session.query(Files.id, Files.filename, Files.size).all()
-    files_payload = [
-        {
-            "url": f"/api/get_game/{row.id}#{row.filename}",
-            "size": int(row.size or 0),
-        }
-        for row in rows
+    if enriched is None:
+        enriched = _build_enriched_shop_files()
+        with shop_root_cache_lock:
+            shop_root_cache['state_token'] = state_token
+            shop_root_cache['files_enriched'] = enriched
+            shop_root_cache['encrypted'] = {}
+
+    if cap is None:
+        return [{"url": e["url"], "size": e["size"]} for e in enriched]
+    return [
+        {"url": e["url"], "size": e["size"]}
+        for e in enriched
+        if _enriched_file_allowed(e, cap, block_unrated)
     ]
 
-    with shop_root_cache_lock:
-        shop_root_cache['state_token'] = state_token
-        shop_root_cache['files'] = files_payload
-        shop_root_cache['encrypted'] = {}
-    return files_payload
-
-def _get_cached_encrypted_shop_payload(shop_payload, public_key, verified_host):
+def _get_cached_encrypted_shop_payload(shop_payload, public_key, verified_host, filter_token=None):
     state_token = get_library_cache_state_token()
     motd = str(shop_payload.get("success") or "")
     referrer = str(shop_payload.get("referrer") or verified_host or "")
-    cache_key = (state_token, motd, str(public_key or ''), referrer)
+    cache_key = (state_token, motd, str(public_key or ''), referrer, filter_token)
 
     with shop_root_cache_lock:
         encrypted_cache = shop_root_cache.setdefault('encrypted', {})
@@ -795,9 +874,41 @@ def _get_cached_encrypted_shop_payload(shop_payload, public_key, verified_host):
     return payload
 
 
-def _get_cached_encrypted_shop_sections_payload(shop_payload, public_key, cache_limit, full_catalog=False):
+def _filter_sections_payload(payload, cap, block_unrated):
+    """Return a copy of a sections payload with items above the age cap removed.
+
+    Each item carries a `rating` (base-title ESRB age, or None when unrated).
+    Applied per-request at the response edge so the global section caches stay
+    user-agnostic.
+    """
+    if cap is None or not isinstance(payload, dict):
+        return payload
+    sections = payload.get('sections')
+    if not isinstance(sections, list):
+        return payload
+
+    filtered_sections = []
+    for section in sections:
+        items = section.get('items') if isinstance(section, dict) else None
+        if not isinstance(items, list):
+            filtered_sections.append(section)
+            continue
+        kept = [
+            item for item in items
+            if _title_allowed(cap, _coerce_rating_value((item or {}).get('rating')), block_unrated)
+        ]
+        new_section = dict(section)
+        new_section['items'] = kept
+        filtered_sections.append(new_section)
+
+    new_payload = dict(payload)
+    new_payload['sections'] = filtered_sections
+    return new_payload
+
+
+def _get_cached_encrypted_shop_sections_payload(shop_payload, public_key, cache_limit, full_catalog=False, filter_token=None):
     state_token = _get_titledb_aware_state_token()
-    cache_key = (state_token, int(cache_limit), bool(full_catalog), str(public_key or ''))
+    cache_key = (state_token, int(cache_limit), bool(full_catalog), str(public_key or ''), filter_token)
 
     with shop_sections_cache_lock:
         encrypted_cache = shop_sections_cache.setdefault('encrypted', {})
@@ -815,7 +926,7 @@ def _get_cached_encrypted_shop_sections_payload(shop_payload, public_key, cache_
     return payload
 
 
-def _respond_with_shop_payload(payload, verified_host=None, cache_kind=None, cache_limit=None, full_catalog=False):
+def _respond_with_shop_payload(payload, verified_host=None, cache_kind=None, cache_limit=None, full_catalog=False, filter_token=None):
     response_payload = payload
     if verified_host is not None and not response_payload.get('referrer'):
         response_payload = dict(response_payload)
@@ -828,6 +939,7 @@ def _respond_with_shop_payload(payload, verified_host=None, cache_kind=None, cac
                 response_payload,
                 public_key=public_key,
                 verified_host=verified_host,
+                filter_token=filter_token,
             )
         elif cache_kind == 'sections':
             encrypted = _get_cached_encrypted_shop_sections_payload(
@@ -835,6 +947,7 @@ def _respond_with_shop_payload(payload, verified_host=None, cache_kind=None, cac
                 public_key=public_key,
                 cache_limit=cache_limit,
                 full_catalog=full_catalog,
+                filter_token=filter_token,
             )
         else:
             encrypted = encrypt_shop(response_payload, public_key_pem=public_key, compression_level=6)
@@ -907,6 +1020,7 @@ def _build_titles_metadata_cache():
     genre_title_ids = {}
     title_name_map = {}
     unrecognized_title_ids = set()
+    rating_by_title_id = {}
 
     with titles.titledb_session() as titledb_loaded:
         if not titledb_loaded:
@@ -915,6 +1029,7 @@ def _build_titles_metadata_cache():
                 'title_name_map': {},
                 'genre_title_ids': {},
                 'unrecognized_title_ids': set(),
+                'rating_by_title_id': {},
             }
 
         title_ids = [row.title_id for row in db.session.query(Titles.title_id).all() if row.title_id]
@@ -925,6 +1040,7 @@ def _build_titles_metadata_cache():
             info = titles.get_game_info(normalized_tid) or {}
             name = str(info.get('name') or '').strip()
             title_name_map[normalized_tid] = _normalize_library_search_text(name)
+            rating_by_title_id[normalized_tid] = _coerce_rating_value(info.get('rating'))
             if _is_titledb_unrecognized(info):
                 unrecognized_title_ids.add(normalized_tid)
             for genre in _split_genres_value(info.get('category') or ''):
@@ -939,6 +1055,7 @@ def _build_titles_metadata_cache():
         'title_name_map': title_name_map,
         'genre_title_ids': genre_title_ids,
         'unrecognized_title_ids': unrecognized_title_ids,
+        'rating_by_title_id': rating_by_title_id,
     }
 
 def _get_cached_titles_metadata():
@@ -956,6 +1073,7 @@ def _get_cached_titles_metadata():
                     for k, v in (titles_metadata_cache.get('genre_title_ids') or {}).items()
                 },
                 'unrecognized_title_ids': set(titles_metadata_cache.get('unrecognized_title_ids') or set()),
+                'rating_by_title_id': dict(titles_metadata_cache.get('rating_by_title_id') or {}),
             }
 
     fresh = _build_titles_metadata_cache()
@@ -969,6 +1087,7 @@ def _get_cached_titles_metadata():
             for k, v in (fresh.get('genre_title_ids') or {}).items()
         }
         titles_metadata_cache['unrecognized_title_ids'] = set(fresh.get('unrecognized_title_ids') or set())
+        titles_metadata_cache['rating_by_title_id'] = dict(fresh.get('rating_by_title_id') or {})
     return fresh
 
 def _get_cached_library_genres():
@@ -1268,6 +1387,8 @@ def _build_shop_sections_payload(limit, full_catalog=False):
                 title_name = title_id or name
                 category = ''
             icon_url = f'/api/shop/icon/{title_id}' if title_id else ((app_info or {}).get('iconUrl') or '')
+            # Base-title rating governs the whole title (updates/DLC inherit it).
+            rating = _coerce_rating_value((base_info or {}).get('rating'))
 
             return {
                 'name': name,
@@ -1277,6 +1398,7 @@ def _build_shop_sections_payload(limit, full_catalog=False):
                 'app_version': row.app_version,
                 'app_type': row.app_type,
                 'category': category,
+                'rating': rating,
                 'icon_url': icon_url,
                 'iconUrl': icon_url,
                 'url': f"/api/get_game/{int(row.file_id)}#{row.filename}",
@@ -2336,6 +2458,165 @@ def _get_request_user():
     return None
 
 
+# --- ESRB / age content filter ---------------------------------------------
+
+def _content_filter_block_unrated():
+    try:
+        settings = load_settings()
+        return bool((settings or {}).get('content_filter', {}).get('block_unrated', True))
+    except Exception:
+        return True
+
+
+def _coerce_rating_value(rating):
+    """Coerce a rating to a non-negative int age, or None if unknown/unrated."""
+    if rating is None:
+        return None
+    try:
+        value = int(rating)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _title_rating(title_id):
+    """Return the ESRB minimum-age int for a title_id, or None if unknown.
+
+    Opens its own TitleDB session; intended for single-title checks (e.g. the
+    download gate). List builders should reuse an open session instead.
+    """
+    tid = str(title_id or '').strip().upper()
+    if not tid:
+        return None
+    try:
+        with titles.titledb_session() as titledb_loaded:
+            if not titledb_loaded:
+                return None
+            info = titles.get_game_info(tid) or {}
+    except Exception:
+        return None
+    return _coerce_rating_value(info.get('rating'))
+
+
+def _title_allowed(cap, rating, block_unrated):
+    """Whether a title is visible/downloadable under an age cap.
+
+    cap is None        -> unrestricted (always allowed)
+    rating is None      -> allowed only when not block_unrated (fail-closed)
+    otherwise           -> allowed when rating <= cap
+    """
+    if cap is None:
+        return True
+    if rating is None:
+        return not bool(block_unrated)
+    try:
+        return int(rating) <= int(cap)
+    except (TypeError, ValueError):
+        return not bool(block_unrated)
+
+
+def _user_rating_cap(username=None):
+    """Resolve (cap, block_unrated) for the requesting (or named) user.
+
+    cap is the user's max_rating int, or None when unrestricted/unknown user.
+    """
+    block_unrated = _content_filter_block_unrated()
+    user = None
+    try:
+        if username is None:
+            try:
+                if current_user.is_authenticated:
+                    user = current_user
+            except Exception:
+                user = None
+            if user is None:
+                username = _get_request_user()
+        if user is None and username:
+            user = User.query.filter_by(user=username).first()
+        cap = getattr(user, 'max_rating', None) if user is not None else None
+    except Exception:
+        cap = None
+    try:
+        cap = int(cap) if cap is not None else None
+    except (TypeError, ValueError):
+        cap = None
+    return cap, block_unrated
+
+
+def _file_title_ids(file_id):
+    """All distinct title_ids associated with a file (multicontent-safe)."""
+    rows = (
+        db.session.query(Titles.title_id)
+        .select_from(Files)
+        .outerjoin(app_files, app_files.c.file_id == Files.id)
+        .outerjoin(Apps, Apps.id == app_files.c.app_id)
+        .outerjoin(Titles, Titles.id == Apps.title_id)
+        .filter(Files.id == file_id)
+        .all()
+    )
+    seen = []
+    for row in rows:
+        tid = (row[0] or '').strip().upper()
+        if tid and tid not in seen:
+            seen.append(tid)
+    return seen
+
+
+def _file_blocked_by_cap(file_id, cap, block_unrated):
+    """True if a file must be hidden/blocked for the given age cap.
+
+    Gates on the most restrictive associated title (fail-closed): an unidentified
+    file, or any title that is unrated/over-cap, blocks the whole file.
+    """
+    if cap is None:
+        return False
+    title_ids = _file_title_ids(file_id)
+    if not title_ids:
+        return bool(block_unrated)
+    with titles.titledb_session() as titledb_loaded:
+        for tid in title_ids:
+            rating = None
+            if titledb_loaded:
+                info = titles.get_game_info(tid) or {}
+                rating = _coerce_rating_value(info.get('rating'))
+            if not _title_allowed(cap, rating, block_unrated):
+                return True
+    return False
+
+
+def _blocked_title_ids_for_cap(cap, block_unrated):
+    """Set of library title_ids that must be hidden for the given age cap.
+
+    Backed by the per-state-token titles metadata cache (rating_by_title_id),
+    so this is cheap to call per request.
+    """
+    if cap is None:
+        return set()
+    metadata = _get_cached_titles_metadata()
+    rating_by_title_id = metadata.get('rating_by_title_id') or {}
+    blocked = set()
+    for tid, rating in rating_by_title_id.items():
+        if not _title_allowed(cap, _coerce_rating_value(rating), block_unrated):
+            blocked.add(tid)
+    return blocked
+
+
+def _allowed_title_ids_for_cap(cap):
+    """Return TitleDB-rated library title IDs at or below ``cap``.
+
+    Used for fail-closed browse filtering: titles absent from the metadata cache
+    are unrated and therefore must not be shown to capped users.
+    """
+    if cap is None:
+        return set()
+    metadata = _get_cached_titles_metadata()
+    rating_by_title_id = metadata.get('rating_by_title_id') or {}
+    return {
+        tid for tid, rating in rating_by_title_id.items()
+        if _title_allowed(cap, _coerce_rating_value(rating), block_unrated=True)
+    }
+
+
 def _effective_remote_addr():
     # Use trusted proxy config to resolve the true client IP.
     # Cache in `g` so multiple log calls per request are consistent and cheap.
@@ -3381,10 +3662,11 @@ def index():
                 motd_text = _render_motd_template(app_settings['shop']['motd'])
         except Exception:
             motd_text = ''
+        cap, block_unrated = _user_rating_cap()
         shop = {
             "success": motd_text
         }
-        shop["files"] = _get_cached_shop_files()
+        shop["files"] = _get_cached_shop_files(cap=cap, block_unrated=block_unrated)
 
         if _is_cyberfoil_request():
             _log_access(
@@ -3395,7 +3677,12 @@ def index():
                 duration_ms=int((time.time() - start_ts) * 1000),
             )
 
-        return _respond_with_shop_payload(shop, verified_host=request.verified_host, cache_kind='root')
+        return _respond_with_shop_payload(
+            shop,
+            verified_host=request.verified_host,
+            cache_kind='root',
+            filter_token=(cap, block_unrated),
+        )
     
     if is_shop_client or (tinfoil_only_mode and not prefers_html):
         logger.info(
@@ -4170,6 +4457,18 @@ def get_settings_api():
     settings.setdefault('downloads', {})
     settings['downloads']['client_capabilities'] = get_supported_download_clients()
     return jsonify(settings)
+
+@app.post('/api/settings/content-filter')
+@access_required('admin')
+def set_content_filter_settings_api():
+    data = request.json or {}
+    block_unrated = bool(data.get('block_unrated'))
+    set_content_filter_settings({'block_unrated': block_unrated})
+    reload_conf()
+    # Encrypted shop payloads vary by filter; drop caches so changes apply now.
+    _invalidate_shop_root_cache()
+    return jsonify({'success': True, 'errors': []})
+
 
 @app.post('/api/settings/titles')
 @access_required('admin')
@@ -5795,6 +6094,8 @@ def get_all_titles_api():
     titles_metadata = None
     search_normalized = ''
     allowed_types = set()
+    # Per-user ESRB age filter for the web browse view.
+    cap, block_unrated = _user_rating_cap()
 
     size_subquery = (
         db.session.query(
@@ -6039,6 +6340,20 @@ def get_all_titles_api():
         else:
             query = query.filter(Titles.id == -1)
 
+    if cap is not None:
+        if block_unrated:
+            # Fail closed: only explicitly rated, permitted titles are visible.
+            # This also hides titles absent from TitleDB metadata.
+            allowed_ids = _allowed_title_ids_for_cap(cap)
+            if allowed_ids:
+                query = query.filter(Titles.title_id.in_(allowed_ids))
+            else:
+                query = query.filter(Titles.id == -1)
+        else:
+            blocked_ids = _blocked_title_ids_for_cap(cap, block_unrated)
+            if blocked_ids:
+                query = query.filter(Titles.title_id.notin_(blocked_ids))
+
     use_name_sort = sort_key in ('title_asc', 'title_desc')
     if sort_key == 'newest':
         query = query.order_by(Titles.id.desc(), Apps.id.desc())
@@ -6056,6 +6371,7 @@ def get_all_titles_api():
         str(completion or ''),
         str(genre or '').lower(),
         'unrecognized' if recognized == 'unrecognized' else ('recognized' if recognized == 'recognized' else ''),
+        ('cap', cap, bool(block_unrated)) if cap is not None else 'nocap',
     )
     total = _get_cached_titles_total(count_cache_key)
     if total is None:
@@ -6212,6 +6528,15 @@ def get_all_titles_api():
         games.append(game)
 
     newest, recommended = _get_discovery_sections(limit=12)
+    if cap is not None:
+        newest = [
+            item for item in newest
+            if _title_allowed(cap, _coerce_rating_value((item or {}).get('rating')), block_unrated)
+        ]
+        recommended = [
+            item for item in recommended
+            if _title_allowed(cap, _coerce_rating_value((item or {}).get('rating')), block_unrated)
+        ]
 
     if lite:
         def _lite(entry):
@@ -6601,6 +6926,15 @@ def serve_game(id):
     if not file_row:
         return Response(status=404)
 
+    # Per-user ESRB age filter: block downloads above the requester's cap.
+    cap, block_unrated = _user_rating_cap(username)
+    if cap is not None and _file_blocked_by_cap(id, cap, block_unrated):
+        logger.info(
+            "Blocked download of file id %s for user %r: exceeds age cap %s.",
+            id, username, cap,
+        )
+        return Response(status=403)
+
     try:
         queue_file_download_increment(id)
     except Exception as e:
@@ -6792,11 +7126,17 @@ def shop_sections_api():
             duration_ms=int((time.time() - start_ts) * 1000),
         )
 
+    # Per-user ESRB age filter: applied at the response edge so the global
+    # section caches above stay user-agnostic.
+    cap, block_unrated = _user_rating_cap()
+    response_payload = _filter_sections_payload(payload, cap, block_unrated)
+
     return _respond_with_shop_payload(
-        payload,
+        response_payload,
         cache_kind='sections',
         cache_limit=cache_limit,
         full_catalog=is_cyberfoil,
+        filter_token=(cap, block_unrated),
     )
 
 

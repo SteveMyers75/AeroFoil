@@ -699,23 +699,41 @@ auth_blueprint = Blueprint('auth', __name__)
 login_manager = LoginManager()
 login_manager.login_view = 'auth.login'
 
-def create_or_update_user(username, password, admin_access=False, shop_access=False, backup_access=False):
+def normalize_max_rating(value):
+    """Coerce an incoming max_rating to a valid ESRB age int, or None.
+
+    None / blank means unrestricted. Unknown values fall back to None.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        rating = int(value)
+    except (TypeError, ValueError):
+        return None
+    return rating if rating in ESRB_VALID_AGES else None
+
+
+def create_or_update_user(username, password, admin_access=False, shop_access=False, backup_access=False, max_rating=None):
     """
     Create a new user or update an existing user with the given credentials and access rights.
     """
+    max_rating = normalize_max_rating(max_rating)
     user = User.query.filter_by(user=username).first()
     if user:
         logger.info(f'Updating existing user {username}')
         user.admin_access = admin_access
         user.shop_access = shop_access
         user.backup_access = backup_access
+        user.max_rating = max_rating
         if getattr(user, 'frozen', False) and admin_access:
             user.frozen = False
             user.frozen_message = None
         user.password = generate_password_hash(password, method='scrypt')
     else:
         logger.info(f'Creating new user {username}')
-        new_user = User(user=username, password=generate_password_hash(password, method='scrypt'), admin_access=admin_access, shop_access=shop_access, backup_access=backup_access)
+        new_user = User(user=username, password=generate_password_hash(password, method='scrypt'), admin_access=admin_access, shop_access=shop_access, backup_access=backup_access, max_rating=max_rating)
         db.session.add(new_user)
     db.session.commit()
     _invalidate_admin_exists_cache()
@@ -850,6 +868,7 @@ def get_users():
             User.backup_access,
             User.frozen,
             User.frozen_message,
+            User.max_rating,
             User.client_uid,
             User.last_login_at,
             User.last_login_ip,
@@ -1049,6 +1068,7 @@ def update_user():
     admin_access = data.get('admin_access')
     shop_access = data.get('shop_access')
     backup_access = data.get('backup_access')
+    max_rating = normalize_max_rating(data.get('max_rating'))
 
     if not user_id:
         errors.append('Missing user id.')
@@ -1081,6 +1101,7 @@ def update_user():
         user.admin_access = admin_access
         user.shop_access = shop_access
         user.backup_access = backup_access
+        user.max_rating = max_rating
         if getattr(user, 'frozen', False) and admin_access:
             user.frozen = False
             user.frozen_message = None
@@ -1151,6 +1172,7 @@ def signup_post():
     username = data['user']
     password = data['password']
     admin_access = data['admin_access']
+    max_rating = normalize_max_rating(data.get('max_rating'))
     if admin_access:
         shop_access = True
         backup_access = True
@@ -1176,7 +1198,7 @@ def signup_post():
         return jsonify(resp)
 
     # create a new user with the form data. Hash the password so the plaintext version isn't saved.
-    create_or_update_user(username, password, admin_access, shop_access, backup_access)
+    create_or_update_user(username, password, admin_access, shop_access, backup_access, max_rating=max_rating)
     
     logger.info(f'Successfully created user {username}.')
 

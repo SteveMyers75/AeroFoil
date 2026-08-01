@@ -556,6 +556,18 @@ def _normalize_shop_settings(raw_shop):
     return merged
 
 
+def _normalize_content_filter_settings(raw_content_filter):
+    defaults = DEFAULT_SETTINGS.get('content_filter', {}) or {}
+    merged = defaults.copy()
+    if isinstance(raw_content_filter, dict):
+        merged.update(raw_content_filter)
+    merged['block_unrated'] = _coerce_bool(
+        merged.get('block_unrated'),
+        default=defaults.get('block_unrated', True),
+    )
+    return merged
+
+
 def _validate_shop_public_key(public_key_pem):
     key_text = str(public_key_pem or '').strip()
     if not key_text:
@@ -701,6 +713,7 @@ def load_settings(force_reload=False):
         _merge_section('shop')
         _merge_section('titles')
         _merge_section('library')
+        _merge_section('content_filter')
 
         env_trust = _read_env_bool('AEROFOIL_TRUST_PROXY_HEADERS')
         if env_trust is None:
@@ -734,6 +747,7 @@ def load_settings(force_reload=False):
         settings['downloads'] = _normalize_download_settings(settings.get('downloads'))
         settings['titles'] = _normalize_titles_settings(settings.get('titles'))
         settings['shop'] = _normalize_shop_settings(settings.get('shop'))
+        settings['content_filter'] = _normalize_content_filter_settings(settings.get('content_filter'))
         settings['library']['conversion_staging_dir'] = _normalize_conversion_staging_dir(
             settings['library'].get('conversion_staging_dir')
         )
@@ -937,6 +951,16 @@ def set_shop_settings(data):
     with open(CONFIG_FILE, 'w') as yaml_file:
         yaml.dump(settings, yaml_file)
     _invalidate_settings_cache()
+
+def set_content_filter_settings(data):
+    settings = load_settings(force_reload=True)
+    settings.setdefault('content_filter', {})
+    settings['content_filter'].update(data or {})
+    settings['content_filter'] = _normalize_content_filter_settings(settings.get('content_filter'))
+    with open(CONFIG_FILE, 'w') as yaml_file:
+        yaml.dump(settings, yaml_file)
+    _invalidate_settings_cache()
+
 
 def set_download_settings(data):
     settings = load_settings(force_reload=True)

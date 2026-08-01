@@ -179,6 +179,8 @@ class User(UserMixin, db.Model):
     backup_access = db.Column(db.Boolean)
     frozen = db.Column(db.Boolean, default=False)
     frozen_message = db.Column(db.String)
+    # ESRB age cap (TitleDB minimum-age int). NULL = unrestricted.
+    max_rating = db.Column(db.Integer)
     client_uid = db.Column(db.String)
     last_login_at = db.Column(db.DateTime)
     last_login_ip = db.Column(db.String)
@@ -654,6 +656,7 @@ def ensure_user_client_schema():
         ('last_login_ip', 'TEXT'),
         ('last_login_country', 'TEXT'),
         ('last_login_country_code', 'TEXT'),
+        ('max_rating', 'INTEGER'),
     ]
 
     try:
