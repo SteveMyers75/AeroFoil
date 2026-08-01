@@ -2058,7 +2058,15 @@ def _add_transmission(url, username, password, download_url, torrent_content, ca
     resp = _request(payload)
     if resp.status_code != 200:
         return False, f"Transmission returned {resp.status_code}.", None
-    data = resp.json().get("arguments", {})
+    body = resp.json() or {}
+    # Transmission RPC returns HTTP 200 even on logical failures; the real status
+    # is in the "result" field ("success" on success). Without this check a
+    # rejected torrent-add surfaced as the misleading "Unable to resolve torrent
+    # id for file selection." (and non-update adds falsely reported success).
+    rpc_result = str(body.get("result") or "").strip()
+    if rpc_result.lower() != "success":
+        return False, f"Transmission rejected torrent: {rpc_result or 'missing result'}", None
+    data = body.get("arguments", {})
     torrent = data.get("torrent-added") or data.get("torrent-duplicate") or {}
     torrent_hash = torrent.get("hashString") or (_extract_magnet_hash(download_url) if download_url else None)
     torrent_id = torrent.get("id") or torrent.get("hashString")
