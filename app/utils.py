@@ -137,6 +137,10 @@ def allowed_file(filename):
 
 def get_supported_content_extension(path):
     name = os.path.basename(str(path or ""))
+    # Ignore hidden files early
+    # Mac AppleDouble files (._) have matching extensions
+    if name.startswith("."):
+        return None
     lowered = name.lower()
     if not lowered:
         return None
