@@ -245,7 +245,7 @@
             <div class="modal-header">
                 <h1 class="modal-title fs-5" id="detailsModalLabel">Content details</h1>
                 <div class="d-flex align-items-center">
-                    <button type="button" class="btn btn-link btn-modal-size-toggle me-3" id="detailsModalToggleSizeBtn" title="Expand details card">
+                    <button type="button" class="btn btn-link btn-modal-size-toggle me-3" id="detailsModalToggleSizeBtn" title="Expand details card" aria-label="Expand details card">
                         <i class="bi bi-arrows-angle-expand" id="detailsModalToggleSizeIcon" style="font-size: 1.1rem; line-height: 1;"></i>
                     </button>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -2460,13 +2460,13 @@
             $dialog.css('max-width', '90vw');
             $dialog.removeClass('modal-lg');
             $icon.removeClass('bi-arrows-angle-expand').addClass('bi-arrows-angle-contract');
-            $btn.attr('title', 'Contract details card');
+            $btn.attr('title', 'Contract details card').attr('aria-label', 'Contract details card');
             sessionStorage.setItem('detailsModalSize', 'expanded');
         } else {
             $dialog.css('max-width', '');
             $dialog.addClass('modal-lg');
             $icon.removeClass('bi-arrows-angle-contract').addClass('bi-arrows-angle-expand');
-            $btn.attr('title', 'Expand details card');
+            $btn.attr('title', 'Expand details card').attr('aria-label', 'Expand details card');
             sessionStorage.setItem('detailsModalSize', 'small');
         }
     }
