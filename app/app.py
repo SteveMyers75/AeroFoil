@@ -2601,6 +2601,22 @@ def _blocked_title_ids_for_cap(cap, block_unrated):
     return blocked
 
 
+def _allowed_title_ids_for_cap(cap):
+    """Return TitleDB-rated library title IDs at or below ``cap``.
+
+    Used for fail-closed browse filtering: titles absent from the metadata cache
+    are unrated and therefore must not be shown to capped users.
+    """
+    if cap is None:
+        return set()
+    metadata = _get_cached_titles_metadata()
+    rating_by_title_id = metadata.get('rating_by_title_id') or {}
+    return {
+        tid for tid, rating in rating_by_title_id.items()
+        if _title_allowed(cap, _coerce_rating_value(rating), block_unrated=True)
+    }
+
+
 def _effective_remote_addr():
     # Use trusted proxy config to resolve the true client IP.
     # Cache in `g` so multiple log calls per request are consistent and cheap.
@@ -6325,9 +6341,18 @@ def get_all_titles_api():
             query = query.filter(Titles.id == -1)
 
     if cap is not None:
-        blocked_ids = _blocked_title_ids_for_cap(cap, block_unrated)
-        if blocked_ids:
-            query = query.filter(Titles.title_id.notin_(blocked_ids))
+        if block_unrated:
+            # Fail closed: only explicitly rated, permitted titles are visible.
+            # This also hides titles absent from TitleDB metadata.
+            allowed_ids = _allowed_title_ids_for_cap(cap)
+            if allowed_ids:
+                query = query.filter(Titles.title_id.in_(allowed_ids))
+            else:
+                query = query.filter(Titles.id == -1)
+        else:
+            blocked_ids = _blocked_title_ids_for_cap(cap, block_unrated)
+            if blocked_ids:
+                query = query.filter(Titles.title_id.notin_(blocked_ids))
 
     use_name_sort = sort_key in ('title_asc', 'title_desc')
     if sort_key == 'newest':

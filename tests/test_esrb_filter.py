@@ -120,6 +120,13 @@ class EsrbFilterTests(unittest.TestCase):
             self.assertEqual(blocked_open, {'B'})
             self.assertEqual(appmod._blocked_title_ids_for_cap(None, True), set())
 
+    def test_allowed_title_ids_for_cap_fails_closed_for_missing_ratings(self):
+        metadata = {'rating_by_title_id': {'A': 0, 'B': 17, 'C': None}}
+        with patch.object(appmod, '_get_cached_titles_metadata', return_value=metadata):
+            self.assertEqual(appmod._allowed_title_ids_for_cap(13), {'A'})
+        with patch.object(appmod, '_get_cached_titles_metadata', return_value={'rating_by_title_id': {}}):
+            self.assertEqual(appmod._allowed_title_ids_for_cap(13), set())
+
     # --- normalize_max_rating (auth) -------------------------------------
     def test_normalize_max_rating(self):
         self.assertIsNone(normalize_max_rating(None))
