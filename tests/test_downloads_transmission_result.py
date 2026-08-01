@@ -33,7 +33,10 @@ class _FakeTransmissionSession:
         self._arguments = arguments if arguments is not None else {}
 
     def post(self, url, json=None, timeout=None):
-        return _FakeResponse(200, {"result": self._result, "arguments": self._arguments})
+        body = {"arguments": self._arguments}
+        if self._result is not None:
+            body["result"] = self._result
+        return _FakeResponse(200, body)
 
 
 class TransmissionResultTests(unittest.TestCase):
@@ -74,6 +77,12 @@ class TransmissionResultTests(unittest.TestCase):
         ok, message, _hash = self._add(session, update_only=False)
         self.assertFalse(ok)
         self.assertIn("invalid or corrupt", message.lower())
+
+    def test_missing_result_reports_failure_instead_of_false_success(self):
+        session = _FakeTransmissionSession(result=None)
+        ok, message, _hash = self._add(session, update_only=False)
+        self.assertFalse(ok)
+        self.assertIn("missing result", message.lower())
 
     def test_successful_add_still_accepted(self):
         session = _FakeTransmissionSession(
