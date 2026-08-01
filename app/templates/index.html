@@ -244,7 +244,12 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h1 class="modal-title fs-5" id="detailsModalLabel">Content details</h1>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                <div class="d-flex align-items-center">
+                    <button type="button" class="btn btn-link btn-modal-size-toggle me-3" id="detailsModalToggleSizeBtn" title="Expand details card">
+                        <i class="bi bi-arrows-angle-expand" id="detailsModalToggleSizeIcon" style="font-size: 1.1rem; line-height: 1;"></i>
+                    </button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
             </div>
             <div class="modal-body">
                 <div class="mb-2">
@@ -2446,8 +2451,37 @@
         setDetailsStatus('', 'muted');
     }
 
+    function setDetailsModalSize(size) {
+        const $dialog = $('#detailsModal').find('.modal-dialog');
+        const $btn = $('#detailsModalToggleSizeBtn');
+        const $icon = $('#detailsModalToggleSizeIcon');
+
+        if (size === 'expanded') {
+            $dialog.css('max-width', '90vw');
+            $dialog.removeClass('modal-lg');
+            $icon.removeClass('bi-arrows-angle-expand').addClass('bi-arrows-angle-contract');
+            $btn.attr('title', 'Contract details card');
+            sessionStorage.setItem('detailsModalSize', 'expanded');
+        } else {
+            $dialog.css('max-width', '');
+            $dialog.addClass('modal-lg');
+            $icon.removeClass('bi-arrows-angle-contract').addClass('bi-arrows-angle-expand');
+            $btn.attr('title', 'Expand details card');
+            sessionStorage.setItem('detailsModalSize', 'small');
+        }
+    }
+
+    $(document).on('click', '#detailsModalToggleSizeBtn', function () {
+        const currentSize = sessionStorage.getItem('detailsModalSize') || 'small';
+        const newSize = currentSize === 'expanded' ? 'small' : 'expanded';
+        setDetailsModalSize(newSize);
+    });
+
     if (detailsModalEl) {
         detailsModalEl.addEventListener('show.bs.modal', event => {
+            const savedSize = sessionStorage.getItem('detailsModalSize') || 'small';
+            setDetailsModalSize(savedSize);
+
             const button = event.relatedTarget;
             const appId = button.getAttribute('data-bs-app-id');
             const appType = button.getAttribute('data-bs-app-type');
