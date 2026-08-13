@@ -3564,7 +3564,7 @@ def tinfoil_access(f):
                                 return _respond_with_shop_payload(empty_sections)
 
                             placeholder = {"url": "/api/frozen/notice#frozen.txt", "size": 1}
-                            shop = {"success": message, "files": [placeholder]}
+                            shop = {"error": message, "files": [placeholder]}
                             return _respond_with_shop_payload(shop, verified_host=request.verified_host)
                 except Exception:
                     pass
@@ -3624,7 +3624,7 @@ def tinfoil_access(f):
                         return _respond_with_shop_payload(empty_sections)
 
                     placeholder = {"url": "/api/frozen/notice#frozen.txt", "size": 1}
-                    shop = {"success": message, "files": [placeholder]}
+                    shop = {"error": message, "files": [placeholder]}
                     return _respond_with_shop_payload(shop, verified_host=request.verified_host)
 
                 return tinfoil_error(message)
