@@ -721,6 +721,9 @@
                                                                 File
                                                             </th>
                                                             <th scope="col">
+                                                                Delivery
+                                                            </th>
+                                                            <th scope="col">
                                                                 Sent
                                                             </th>
                                                         </tr>
@@ -730,7 +733,7 @@
                                                     >
                                                         <tr>
                                                             <td
-                                                                colspan="7"
+                                                                colspan="8"
                                                                 class="table-muted-empty"
                                                             >
                                                                 Loading...
@@ -1446,7 +1449,7 @@
 
         if (!list.length) {
             body.html(
-                '<tr><td colspan="7" class="table-muted-empty">No active transfers.</td></tr>',
+                '<tr><td colspan="8" class="table-muted-empty">No active transfers.</td></tr>',
             );
             return;
         }
@@ -1478,6 +1481,7 @@
                     <td><span class="location-cell">${flagIcon}${escapeHtml(locationLabel)}</span></td>
                     <td>${escapeHtml(item.title_id || "-")}${item.title_name ? ` <span class="text-muted">(${escapeHtml(item.title_name)})</span>` : ""}</td>
                     <td class="text-truncate" style="max-width: 300px;">${escapeHtml(item.filename || "-")}</td>
+                    <td>${item.transfer_mode === "virtual" ? `<span class="badge text-bg-info">Virtual ${escapeHtml((item.virtual_filename || "").split(".").pop().toUpperCase() || "stream")}</span>` : '<span class="text-muted">Original file</span>'}</td>
                     <td>${escapeHtml(formatBytes(item.bytes_sent))}</td>
                 </tr>`,
             );

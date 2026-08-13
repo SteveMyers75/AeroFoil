@@ -7028,6 +7028,11 @@ def serve_game(id):
     filedir = os.path.dirname(filepath)
     title_id = (file_row.title_id or '').strip().upper() or None
     fast_transfer_mode = bool((app_settings.get('shop') or {}).get('fast_transfer_mode'))
+    stream_compressed = (
+        _is_cyberfoil_request()
+        and bool((app_settings.get('shop') or {}).get('cyberfoil_virtual_compressed_stream', True))
+        and compressed_stream.supports_virtual_stream(filepath)
+    )
 
     transfer_id = uuid.uuid4().hex
     meta = {
@@ -7041,16 +7046,13 @@ def serve_game(id):
         'filename': filename,
         'title_id': title_id,
         'bytes_sent': 0,
+        'transfer_mode': 'virtual' if stream_compressed else 'original',
+        'virtual_filename': compressed_stream.virtual_filename(filename) if stream_compressed else None,
     }
 
     with _active_transfers_lock:
         _active_transfers[transfer_id] = meta
 
-    stream_compressed = (
-        _is_cyberfoil_request()
-        and bool((app_settings.get('shop') or {}).get('cyberfoil_virtual_compressed_stream', True))
-        and compressed_stream.supports_virtual_stream(filepath)
-    )
     if stream_compressed:
         try:
             stream, output_size = compressed_stream.virtual_stream(filepath)
