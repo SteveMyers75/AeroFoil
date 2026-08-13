@@ -2704,6 +2704,112 @@ class ManagedCompletionStateTests(unittest.TestCase):
         self.assertEqual(message, "Removed duplicate entry.")
         self.assertEqual(downloads_manager._state.get("duplicates"), [])
 
+class PendingQueueReconciliationTests(unittest.TestCase):
+    def test_restored_sab_job_blocks_automatic_search_for_same_update(self):
+        state = {
+            "running": False,
+            "last_run": 0.0,
+            "pending": {
+                "restored:usenet:sabnzbd:nzo123": {
+                    "title_id": None,
+                    "version": None,
+                    "expected_name": "Example Title Update [v196608] NSW-GRP",
+                    "title_name": "Example Title Update [v196608] NSW-GRP",
+                    "protocol": "usenet",
+                    "client_type": "sabnzbd",
+                },
+            },
+            "completed": set(),
+            "completed_identities": set(),
+            "duplicates": [],
+        }
+        with patch("app.downloads.manager._state", state):
+            self.assertTrue(downloads_manager._already_tracked(
+                "0100EXAMPLE000000:196608",
+                update={
+                    "title_id": "0100EXAMPLE000000",
+                    "title_name": "Example Title",
+                    "version": 196608,
+                },
+            ))
+
+    @patch("app.downloads.manager._persist_downloads_state_locked")
+    @patch("app.downloads.manager._is_protocol_client_configured", return_value=True)
+    @patch("app.downloads.manager.time.time", return_value=200.0)
+    def test_reconcile_removes_job_absent_from_sab_after_grace_period(
+        self,
+        time_mock,
+        configured_mock,
+        persist_mock,
+    ):
+        state = {
+            "running": False,
+            "last_run": 0.0,
+            "pending": {
+                "0100EXAMPLE000000:196608": {
+                    "title_id": "0100EXAMPLE000000",
+                    "version": 196608,
+                    "id": "nzo123",
+                    "hash": "nzo123",
+                    "protocol": "usenet",
+                    "client_type": "sabnzbd",
+                    "missing_since": 100.0,
+                },
+            },
+            "completed": set(),
+            "completed_identities": set(),
+            "duplicates": [],
+        }
+        snapshot = {
+            "active_by_protocol": {"usenet": {"items": []}},
+            "completed_by_protocol": {"usenet": {"items": []}},
+            "errors_by_protocol": {},
+        }
+        with patch("app.downloads.manager._state", state):
+            removed = downloads_manager._reconcile_missing_pending_downloads({}, snapshot)
+
+        self.assertEqual(removed, 1)
+        self.assertEqual(state["pending"], {})
+        configured_mock.assert_called_once_with({}, "usenet")
+        persist_mock.assert_called_once()
+
+    @patch("app.downloads.manager._persist_downloads_state_locked")
+    @patch("app.downloads.manager._is_protocol_client_configured", return_value=True)
+    @patch("app.downloads.manager.time.time", return_value=200.0)
+    def test_reconcile_keeps_job_when_sab_poll_failed(
+        self,
+        time_mock,
+        configured_mock,
+        persist_mock,
+    ):
+        state = {
+            "running": False,
+            "last_run": 0.0,
+            "pending": {
+                "0100EXAMPLE000000:196608": {
+                    "id": "nzo123",
+                    "hash": "nzo123",
+                    "protocol": "usenet",
+                    "missing_since": 100.0,
+                },
+            },
+            "completed": set(),
+            "completed_identities": set(),
+            "duplicates": [],
+        }
+        snapshot = {
+            "active_by_protocol": {"usenet": {"items": []}},
+            "completed_by_protocol": {"usenet": {"items": []}},
+            "errors_by_protocol": {"usenet": ["active: unavailable"]},
+        }
+        with patch("app.downloads.manager._state", state):
+            removed = downloads_manager._reconcile_missing_pending_downloads({}, snapshot)
+
+        self.assertEqual(removed, 0)
+        self.assertIn("0100EXAMPLE000000:196608", state["pending"])
+        configured_mock.assert_not_called()
+        persist_mock.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

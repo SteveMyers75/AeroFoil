@@ -44,6 +44,7 @@ _DOWNLOADS_STATE_FILE = os.path.join(DATA_DIR, "downloads_state.json")
 _DOWNLOADS_CONTENT_INDEX_FILE = os.path.join(DATA_DIR, "downloads_content.index.sqlite3")
 _SNAKE_PASS_BASE_TITLE_ID = "0100B3A017864000"
 _SNAKE_PASS_BASE_MIN_VERSION = 1
+_PENDING_MISSING_GRACE_SECONDS = 30
 
 
 def _get_prowlarr_timeout_seconds(prowlarr_cfg):
@@ -580,6 +581,7 @@ def get_downloads_state():
     downloads = settings.get("downloads", {})
     snapshot = _get_download_activity_snapshot(downloads)
     _restore_pending_from_active(downloads, snapshot=snapshot)
+    _reconcile_missing_pending_downloads(downloads, snapshot)
     with _state_lock:
         pending_items = []
         for key, info in _state["pending"].items():
@@ -828,6 +830,13 @@ def _process_downloads(downloads, scan_cb=None, post_cb=None):
         logger.warning("Downloads enabled, but no download client is configured.")
         return
 
+    # Restore work which was queued before an AeroFoil restart before deciding
+    # which updates still need searching.  This prevents a second NZB for an
+    # update that is already in the downloader from being submitted.
+    snapshot = _get_download_activity_snapshot(downloads)
+    _restore_pending_from_active(downloads, snapshot=snapshot)
+    _reconcile_missing_pending_downloads(downloads, snapshot)
+
     missing_updates = _get_missing_updates()
     if not missing_updates:
         _check_completed(downloads, scan_cb=scan_cb, post_cb=post_cb)
@@ -857,6 +866,7 @@ def _process_downloads(downloads, scan_cb=None, post_cb=None):
             min_seeders=min_seeders,
             min_age_minutes=min_age_minutes,
             search_limit=search_limit,
+            allow_duplicates=False,
             allowed_protocols=allowed_protocols,
         )
 
@@ -1054,7 +1064,7 @@ def _search_and_queue(
     require_exact_version=True,
 ):
     key = f"{update['title_id']}:{update['version']}"
-    if not allow_duplicates and _already_tracked(key):
+    if not allow_duplicates and _already_tracked(key, update=update):
         return False, "Update is already queued."
     try:
         requested_version = int(update.get("version"))
@@ -1208,10 +1218,34 @@ def _get_missing_updates():
         titles_lib.release_titledb()
 
 
-def _already_tracked(key):
+def _already_tracked(key, update=None):
     _ensure_downloads_state_loaded()
     with _state_lock:
-        return key in _state["pending"] or key in _state["completed"]
+        if key in _state["pending"] or key in _state["completed"]:
+            return True
+        if not isinstance(update, dict):
+            return False
+        title_id = str(update.get("title_id") or "").strip().upper()
+        try:
+            version = int(update.get("version"))
+        except (TypeError, ValueError):
+            return False
+        title_name = _normalize_match_text(update.get("title_name"))
+        for info in _state["pending"].values():
+            if not isinstance(info, dict):
+                continue
+            if (
+                str(info.get("title_id") or "").strip().upper() == title_id
+                and str(info.get("version") or "").strip() == str(version)
+            ):
+                return True
+            # Restored downloader items may not have a readable payload yet,
+            # so use their release name as a conservative fallback.
+            label = _normalize_match_text(info.get("expected_name") or info.get("title_name"))
+            label_version = _extract_update_version_from_name(label)
+            if title_name and title_name in label and (label_version is None or label_version == version):
+                return True
+        return False
 
 
 def _normalize_pending_item_id(item_id, protocol=None):
@@ -1434,6 +1468,52 @@ def _restore_pending_from_active(downloads, snapshot=None):
     return restored
 
 
+def _reconcile_missing_pending_downloads(downloads, snapshot):
+    """Drop tracked jobs that have disappeared from a successfully polled client.
+
+    A newly submitted NZB can take a moment to appear in SABnzbd, so an item
+    must be absent for a short grace period before its local queue record is
+    removed.  Poll errors are deliberately never treated as an empty queue.
+    """
+    if not isinstance(snapshot, dict):
+        return 0
+    now = time.time()
+    removed = 0
+    changed = False
+    errors_by_protocol = snapshot.get("errors_by_protocol") or {}
+    with _state_lock:
+        for key, info in list(_state.get("pending", {}).items()):
+            if not isinstance(info, dict):
+                continue
+            protocol = str(info.get("protocol") or "").strip().lower()
+            if not protocol or errors_by_protocol.get(protocol):
+                continue
+            if not _is_protocol_client_configured(downloads, protocol):
+                continue
+            matches = _get_snapshot_matches(info, snapshot)
+            if matches["active_match"] or matches["completed_match"]:
+                if info.pop("missing_since", None) is not None:
+                    changed = True
+                continue
+            try:
+                missing_since = float(info.get("missing_since"))
+            except (TypeError, ValueError):
+                missing_since = 0.0
+            if not missing_since:
+                info["missing_since"] = now
+                changed = True
+                continue
+            if now - missing_since >= _PENDING_MISSING_GRACE_SECONDS:
+                _state["pending"].pop(key, None)
+                _state["completed"].discard(key)
+                removed += 1
+                changed = True
+                logger.info("Removed stale AeroFoil queue entry no longer present in %s: %s", protocol, key)
+        if changed:
+            _persist_downloads_state_locked()
+    return removed
+
+
 def _track_pending(key, update, item_id, expected_name=None, protocol=None, client_type=None):
     _ensure_downloads_state_loaded()
     normalized_id = _normalize_pending_item_id(item_id, protocol=protocol)
@@ -1453,6 +1533,7 @@ def _track_pending(key, update, item_id, expected_name=None, protocol=None, clie
             "state_reason": None,
             "last_seen_status": None,
             "last_seen_path": None,
+            "missing_since": None,
         }
         _persist_downloads_state_locked()
 
