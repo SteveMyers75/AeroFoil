@@ -146,6 +146,10 @@ class Apps(db.Model):
     app_version_num = db.Column(db.Integer, default=0)
     app_type = db.Column(db.String)
     owned = db.Column(db.Boolean, default=False)
+    # Ignored add-ons and update versions do not contribute to library
+    # completeness checks, but remain in the database so the choice can be
+    # reversed from the title details view.
+    ignored = db.Column(db.Boolean, default=False, nullable=False)
 
     title = db.relationship('Titles', backref=db.backref('apps', lazy=True, cascade="all, delete-orphan"))
     files = db.relationship('Files', secondary=app_files, backref=db.backref('apps', lazy='select'))
@@ -568,6 +572,11 @@ def ensure_performance_schema():
         added_column = False
         if not _sqlite_column_exists('apps', 'app_version_num'):
             db.session.execute(text("ALTER TABLE apps ADD COLUMN app_version_num INTEGER"))
+            db.session.commit()
+            added_column = True
+
+        if not _sqlite_column_exists('apps', 'ignored'):
+            db.session.execute(text("ALTER TABLE apps ADD COLUMN ignored BOOLEAN NOT NULL DEFAULT 0"))
             db.session.commit()
             added_column = True
 

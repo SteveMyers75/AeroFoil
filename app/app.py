@@ -6163,6 +6163,7 @@ def get_all_titles_api():
                 )
             ).label('max_owned_update_version')
         )
+        .filter(or_(Apps.app_type != APP_TYPE_UPD, Apps.ignored.is_(False)))
         .group_by(Apps.title_id)
         .subquery()
     )
@@ -6177,7 +6178,7 @@ def get_all_titles_api():
                 )
             ).label('max_owned_version')
         )
-        .filter(Apps.app_type == APP_TYPE_DLC)
+        .filter(Apps.app_type == APP_TYPE_DLC, Apps.ignored.is_(False))
         .group_by(Apps.app_id)
         .subquery()
     )
@@ -6199,7 +6200,7 @@ def get_all_titles_api():
                 )
             ).label('max_owned_version')
         )
-        .filter(Apps.app_type == APP_TYPE_DLC)
+        .filter(Apps.app_type == APP_TYPE_DLC, Apps.ignored.is_(False))
         .group_by(Apps.title_id, Apps.app_id)
         .subquery()
     )
@@ -6669,8 +6670,14 @@ def get_title_details_api():
             owned_dlc_count = sum(1 for app in title_apps if app.app_type == APP_TYPE_DLC and bool(app.owned))
             has_base = owned_base_count > 0
             deletable_versions = _build_deletable_version_map(title_apps)
-            available_update_versions = [_safe_int(app.app_version) for app in title_apps if app.app_type == APP_TYPE_UPD]
-            owned_update_versions = [_safe_int(app.app_version) for app in title_apps if app.app_type == APP_TYPE_UPD and bool(app.owned)]
+            available_update_versions = [
+                _safe_int(app.app_version) for app in title_apps
+                if app.app_type == APP_TYPE_UPD and not bool(app.ignored)
+            ]
+            owned_update_versions = [
+                _safe_int(app.app_version) for app in title_apps
+                if app.app_type == APP_TYPE_UPD and bool(app.owned) and not bool(app.ignored)
+            ]
             highest_available_update_version = max(available_update_versions, default=0)
             highest_owned_update_version = max(owned_update_versions, default=0)
             has_latest_version = highest_available_update_version <= 0 or highest_owned_update_version >= highest_available_update_version
@@ -6702,7 +6709,7 @@ def get_title_details_api():
                 'dlc_list': dlc_items,
                 'missing_dlcs': [
                     item for item in dlc_items
-                    if not item.get('owned')
+                    if not item.get('owned') and not item.get('ignored')
                 ],
             }
             if row.app_type == APP_TYPE_BASE:
@@ -6712,6 +6719,7 @@ def get_title_details_api():
                         Apps.app_id,
                         Apps.app_version,
                         Apps.owned,
+                        Apps.ignored,
                         func.coalesce(app_size_subquery.c.size, 0).label('size'),
                     )
                     .outerjoin(app_size_subquery, app_size_subquery.c.app_pk == Apps.id)
@@ -6723,6 +6731,7 @@ def get_title_details_api():
                         'app_type': APP_TYPE_UPD,
                         'version': int(upd.app_version or 0),
                         'owned': bool(upd.owned),
+                        'ignored': bool(upd.ignored),
                         'deletable': deletable_versions.get(
                             (str(upd.app_id or '').strip().upper(), APP_TYPE_UPD, str(upd.app_version or '').strip()),
                             False,
@@ -6745,6 +6754,7 @@ def get_title_details_api():
                         Apps.app_id,
                         Apps.app_version,
                         Apps.owned,
+                        Apps.ignored,
                         func.coalesce(app_size_subquery.c.size, 0).label('size'),
                     )
                     .outerjoin(app_size_subquery, app_size_subquery.c.app_pk == Apps.id)
@@ -6756,6 +6766,7 @@ def get_title_details_api():
                         'app_type': APP_TYPE_DLC,
                         'version': int(dlc.app_version or 0),
                         'owned': bool(dlc.owned),
+                        'ignored': bool(dlc.ignored),
                         'deletable': deletable_versions.get(
                             (str(dlc.app_id or '').strip().upper(), APP_TYPE_DLC, str(dlc.app_version or '').strip()),
                             False,
@@ -6765,7 +6776,7 @@ def get_title_details_api():
                     })
                 dlc_versions.sort(key=lambda item: item['version'], reverse=True)
                 game['version'] = dlc_versions
-                latest_available = max([item['version'] for item in dlc_versions], default=0)
+                latest_available = max([item['version'] for item in dlc_versions if not item['ignored']], default=0)
                 latest_owned = max([item['version'] for item in dlc_versions if item['owned']], default=0)
                 game['has_latest_version'] = latest_owned >= latest_available
 
@@ -6775,9 +6786,40 @@ def get_title_details_api():
     })
 
 
+@app.post('/api/library/ignored-content')
+@access_required('admin')
+def set_ignored_library_content_api():
+    data = request.get_json(silent=True) or {}
+    app_id = str(data.get('app_id') or '').strip().upper()
+    app_type = str(data.get('app_type') or '').strip().upper()
+    ignored = bool(data.get('ignored'))
+
+    if not app_id or app_type not in (APP_TYPE_UPD, APP_TYPE_DLC):
+        return jsonify({'success': False, 'error': 'invalid_content'}), 400
+
+    query = Apps.query.filter(Apps.app_id == app_id, Apps.app_type == app_type)
+    if app_type == APP_TYPE_UPD:
+        try:
+            version = int(data.get('version'))
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': 'invalid_version'}), 400
+        query = query.filter(Apps.app_version_num == version)
+
+    updated = query.update({Apps.ignored: ignored}, synchronize_session=False)
+    if not updated:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': 'content_not_found'}), 404
+
+    db.session.commit()
+    update_titles()
+    invalidate_library_cache_state_token()
+    post_library_change()
+    return jsonify({'success': True, 'ignored': ignored, 'updated': updated})
+
+
 def _build_title_details_dlc_items(title_fk, title_id):
     dlc_rows = (
-        db.session.query(Apps.app_id, Apps.app_version, Apps.owned)
+        db.session.query(Apps.app_id, Apps.app_version, Apps.owned, Apps.ignored)
         .filter(Apps.title_id == title_fk, Apps.app_type == APP_TYPE_DLC)
         .all()
     )
@@ -6786,7 +6828,12 @@ def _build_title_details_dlc_items(title_fk, title_id):
         app_id = str(dlc.app_id or '').strip().upper()
         if not app_id:
             continue
-        entry = dlc_state.setdefault(app_id, {'max_version': None, 'max_owned': None, 'has_owned': False})
+        entry = dlc_state.setdefault(app_id, {
+            'max_version': None,
+            'max_owned': None,
+            'has_owned': False,
+            'ignored': True,
+        })
         version_value = int(dlc.app_version or 0)
         if entry['max_version'] is None or version_value > entry['max_version']:
             entry['max_version'] = version_value
@@ -6794,6 +6841,8 @@ def _build_title_details_dlc_items(title_fk, title_id):
             entry['has_owned'] = True
             if entry['max_owned'] is None or version_value > entry['max_owned']:
                 entry['max_owned'] = version_value
+        if not bool(getattr(dlc, 'ignored', False)):
+            entry['ignored'] = False
 
     dlc_app_ids = set(dlc_state.keys())
     if not dlc_app_ids:
@@ -6805,7 +6854,12 @@ def _build_title_details_dlc_items(title_fk, title_id):
 
     dlc_items = []
     for app_id in sorted(dlc_app_ids):
-        entry = dlc_state.get(app_id) or {'max_version': None, 'max_owned': None, 'has_owned': False}
+        entry = dlc_state.get(app_id) or {
+            'max_version': None,
+            'max_owned': None,
+            'has_owned': False,
+            'ignored': False,
+        }
         versions_list = titles.get_all_app_existing_versions(app_id) or []
         max_version = None
         if versions_list:
@@ -6828,10 +6882,11 @@ def _build_title_details_dlc_items(title_fk, title_id):
             'latest_version': max_version,
             'owned_version': owned_max,
             'owned': bool(entry.get('has_owned')),
+            'ignored': bool(entry.get('ignored')),
         })
 
     dlc_items.sort(key=lambda item: str(item.get('name') or '').lower())
-    has_all_dlcs = all(item.get('owned') for item in dlc_items) if dlc_items else True
+    has_all_dlcs = all(item.get('owned') or item.get('ignored') for item in dlc_items) if dlc_items else True
     return dlc_items, has_all_dlcs
 
 

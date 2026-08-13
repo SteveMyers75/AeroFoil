@@ -2199,9 +2199,9 @@
             }
             return Number(Boolean(right?.owned)) - Number(Boolean(left?.owned));
         });
-        const canDeleteRows = canManageDownloads && sortedVersions.some(version => version && version.deletable);
+        const canVersionActions = canManageDownloads && sortedVersions.length > 0;
         const versionRows = sortedVersions.map(version => {
-            const actionCell = canDeleteRows
+            const actionCell = canVersionActions
                 ? `
                     <td class="text-end">
                         ${version.deletable
@@ -2213,20 +2213,30 @@
                                     <i class="bi bi-trash"></i>
                                </button>`
                             : ''}
+                        ${!version.owned
+                            ? `<button type="button" class="btn btn-outline-secondary btn-sm details-ignore-content-btn"
+                                    title="${version.ignored ? 'Restore update to completeness checks' : 'Ignore update for completeness checks'}"
+                                    data-app-id="${escapeHtml(String(version.app_id || game.app_id || ''))}"
+                                    data-app-type="${escapeHtml(String(version.app_type || game.app_type || ''))}"
+                                    data-version="${escapeHtml(String(version.version ?? ''))}"
+                                    data-ignored="${version.ignored ? 'false' : 'true'}">
+                                    <i class="bi bi-${version.ignored ? 'arrow-counterclockwise' : 'eye-slash'}"></i>
+                               </button>`
+                            : ''}
                     </td>
                 `
                 : '';
             return `
                 <tr>
                     <td>v${version.version}</td>
-                    <td>${version.owned ? 'Owned' : 'Missing'}</td>
+                    <td>${version.owned ? 'Owned' : (version.ignored ? 'Ignored' : 'Missing')}</td>
                     <td>${(version.size !== undefined && version.size !== null) ? formatBytes(version.size) : '-'}</td>
                     <td>${version.release_date || 'Unknown'}</td>
                     ${actionCell}
                 </tr>
             `;
         }).join('');
-        const missingVersions = sortedVersions.filter(version => !version.owned);
+        const missingVersions = sortedVersions.filter(version => !version.owned && !version.ignored);
         const latestMissing = missingVersions.length ? missingVersions[0] : null;
         const latestKnownVersion = sortedVersions.length ? sortedVersions[0] : null;
         const updateSearchVersion = latestMissing?.version ?? latestKnownVersion?.version ?? null;
@@ -2314,27 +2324,33 @@
                 </div>
             `
             : '';
-        const canSearchDlcRows = canManageDownloads && dlcList.some(dlc => {
-            const rawName = String((dlc && dlc.name) || game.title_id_name || game.title_id || '').trim();
-            return !(dlc && dlc.owned) && Boolean(rawName);
-        });
+        const canDlcActions = canManageDownloads && dlcList.length > 0;
         const dlcRows = dlcList.map(dlc => {
             const name = escapeHtml(dlc.name || dlc.app_id || '-');
-            const status = dlc.owned ? 'Owned' : 'Missing';
-            const statusClass = dlc.owned ? 'text-bg-success' : 'text-bg-warning';
+            const status = dlc.owned ? 'Owned' : (dlc.ignored ? 'Ignored' : 'Missing');
+            const statusClass = dlc.owned ? 'text-bg-success' : (dlc.ignored ? 'text-bg-secondary' : 'text-bg-warning');
             const latest = dlc.latest_version ? `v${dlc.latest_version}` : '-';
             const owned = dlc.owned_version ? `v${dlc.owned_version}` : '-';
             const rawName = String(dlc.name || game.title_id_name || game.title_id || '').trim();
             const dlcSearchQuery = rawName ? `${rawName} DLC` : '';
-            const actionCell = canSearchDlcRows
+            const actionCell = canDlcActions
                 ? `
                     <td class="text-end">
-                        ${!dlc.owned && dlcSearchQuery
+                        ${!dlc.owned && !dlc.ignored && dlcSearchQuery
                             ? `<button type="button" class="btn btn-outline-warning btn-sm details-dlc-search-btn"
                                     data-title-id="${escapeHtml(String(game.title_id || ''))}"
                                     data-query="${escapeHtml(dlcSearchQuery)}"
                                     data-label="${escapeHtml(rawName || 'DLC')}">
                                     <i class="bi bi-cloud-arrow-down"></i>
+                               </button>`
+                            : ''}
+                        ${!dlc.owned
+                            ? `<button type="button" class="btn btn-outline-secondary btn-sm details-ignore-content-btn ms-1"
+                                    title="${dlc.ignored ? 'Restore DLC to completeness checks' : 'Ignore DLC for completeness checks'}"
+                                    data-app-id="${escapeHtml(String(dlc.app_id || ''))}"
+                                    data-app-type="DLC"
+                                    data-ignored="${dlc.ignored ? 'false' : 'true'}">
+                                    <i class="bi bi-${dlc.ignored ? 'arrow-counterclockwise' : 'eye-slash'}"></i>
                                </button>`
                             : ''}
                     </td>
@@ -2362,7 +2378,7 @@
                                      <th scope="col">Status</th>
                                      <th scope="col">Size</th>
                                      <th scope="col">Release date</th>
-                                     ${canDeleteRows ? '<th scope="col" class="text-end">Actions</th>' : ''}
+                                     ${canVersionActions ? '<th scope="col" class="text-end">Actions</th>' : ''}
                                  </tr>
                              </thead>
                             <tbody>
@@ -2385,7 +2401,7 @@
                                     <th scope="col">Status</th>
                                     <th scope="col">Owned</th>
                                     <th scope="col">Latest</th>
-                                    ${canSearchDlcRows ? '<th scope="col" class="text-end">Actions</th>' : ''}
+                                    ${canDlcActions ? '<th scope="col" class="text-end">Actions</th>' : ''}
                                 </tr>
                             </thead>
                             <tbody>
@@ -2932,6 +2948,43 @@
                     'dlc-only': 'true',
                 };
             },
+        });
+    });
+
+    $(document).on('click', '.details-ignore-content-btn', function () {
+        const button = $(this);
+        const appId = String(button.data('app-id') || '').trim();
+        const appType = String(button.data('app-type') || '').trim().toUpperCase();
+        const ignored = String(button.data('ignored')) === 'true';
+        const version = button.data('version');
+        if (!appId || !appType) {
+            return;
+        }
+
+        button.prop('disabled', true);
+        $.ajax({
+            url: '/api/library/ignored-content',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({ app_id: appId, app_type: appType, version, ignored }),
+        }).done(function (response) {
+            if (!response || response.success !== true) {
+                setDetailsStatus('Unable to update ignored content.', 'danger');
+                return;
+            }
+            gameDetailsCache.clear();
+            fetchGames().then(() => {
+                recomputeFilteredGames();
+                renderGenresDropdown();
+            }).catch(() => {});
+            const context = currentDetailsContext || {};
+            $.getJSON(`/api/title-details?app_id=${encodeURIComponent(context.appId || appId)}&app_type=${encodeURIComponent(context.appType || appType)}`)
+                .done(data => renderDetails(data && data.game ? data.game : null))
+                .fail(() => setDetailsStatus('Saved, but refreshing title details failed.', 'danger'));
+        }).fail(function () {
+            setDetailsStatus('Unable to update ignored content.', 'danger');
+        }).always(function () {
+            button.prop('disabled', false);
         });
     });
 

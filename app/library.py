@@ -714,9 +714,12 @@ def update_titles():
                 # check up_to_date - find highest owned update version
                 owned_update_apps = [
                     app for app in title_apps
-                    if app.app_type == APP_TYPE_UPD and bool(app.owned)
+                    if app.app_type == APP_TYPE_UPD and bool(app.owned) and not bool(getattr(app, 'ignored', False))
                 ]
-                available_update_apps = [app for app in title_apps if app.app_type == APP_TYPE_UPD]
+                available_update_apps = [
+                    app for app in title_apps
+                    if app.app_type == APP_TYPE_UPD and not bool(getattr(app, 'ignored', False))
+                ]
 
                 if not available_update_apps:
                     up_to_date = True
@@ -728,7 +731,10 @@ def update_titles():
                     up_to_date = highest_owned_version >= highest_available_version
 
                 # check complete - latest version of all available DLC are owned
-                available_dlc_apps = [app for app in title_apps if app.app_type == APP_TYPE_DLC]
+                available_dlc_apps = [
+                    app for app in title_apps
+                    if app.app_type == APP_TYPE_DLC and not bool(getattr(app, 'ignored', False))
+                ]
                 if not available_dlc_apps:
                     complete = True
                 else:
@@ -797,6 +803,7 @@ def _compute_library_cache_state_token():
                     COALESCE((SELECT COUNT(*) FROM apps), 0),
                     COALESCE((SELECT MAX(id) FROM apps), 0),
                     COALESCE((SELECT SUM(CASE WHEN owned THEN 1 ELSE 0 END) FROM apps), 0),
+                    COALESCE((SELECT SUM(CASE WHEN ignored THEN 1 ELSE 0 END) FROM apps), 0),
                     COALESCE((SELECT SUM(COALESCE(app_version_num, 0)) FROM apps), 0),
                     COALESCE((SELECT SUM(
                         (COALESCE(title_id, 0) + COALESCE(app_version_num, 0))
@@ -865,7 +872,7 @@ def get_library_cache_state_token(force_refresh=False):
 
 
 # Bump this when the cached library schema changes.
-LIBRARY_CACHE_VERSION = 7
+LIBRARY_CACHE_VERSION = 8
 
 def is_library_unchanged():
     cache_path = Path(LIBRARY_CACHE_FILE)

@@ -191,7 +191,7 @@ class LibraryHelperTests(unittest.TestCase):
             "Example.nsp",
         )
         saved_payload = save_library_to_disk_mock.call_args[0][0]
-        self.assertEqual(saved_payload["version"], 7)
+        self.assertEqual(saved_payload["version"], 8)
         self.assertIn("files", saved_payload["library"][0])
 
     def test_sanitize_component(self):
@@ -667,6 +667,7 @@ class LibraryHelperTests(unittest.TestCase):
                     "latest_version": 5,
                     "owned_version": None,
                     "owned": False,
+                    "ignored": False,
                 },
                 {
                     "app_id": "0100AAAA00001002",
@@ -674,10 +675,31 @@ class LibraryHelperTests(unittest.TestCase):
                     "latest_version": 0,
                     "owned_version": None,
                     "owned": False,
+                    "ignored": False,
                 },
             ],
         )
         self.assertFalse(has_all_dlcs)
+
+    @patch("app.app.titles.get_game_info", return_value={"name": "Optional language pack"})
+    @patch("app.app.titles.get_all_app_existing_versions", return_value=[0])
+    @patch("app.app.db.session.query")
+    def test_build_title_details_dlc_items_treats_ignored_dlc_as_complete(
+        self,
+        query_mock,
+        get_all_app_existing_versions_mock,
+        get_game_info_mock,
+    ):
+        query_mock.return_value.filter.return_value.all.return_value = [
+            SimpleNamespace(app_id="0100AAAA00001001", app_version="0", owned=False, ignored=True),
+        ]
+
+        dlc_items, has_all_dlcs = _build_title_details_dlc_items(123, "0100AAAA00000000")
+
+        self.assertTrue(has_all_dlcs)
+        self.assertEqual(dlc_items[0]["name"], "Optional language pack")
+        self.assertTrue(dlc_items[0]["ignored"])
+        self.assertFalse(dlc_items[0]["owned"])
 
     @patch("app.app._run_post_library_change")
     @patch("app.app.post_library_change")
