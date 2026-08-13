@@ -542,6 +542,10 @@ def _normalize_shop_settings(raw_shop):
         merged.get('fast_transfer_mode'),
         default=defaults.get('fast_transfer_mode', False),
     )
+    merged['cyberfoil_virtual_compressed_stream'] = _coerce_bool(
+        merged.get('cyberfoil_virtual_compressed_stream'),
+        default=defaults.get('cyberfoil_virtual_compressed_stream', True),
+    )
     merged['tinfoil_only_mode'] = _coerce_bool(
         merged.get('tinfoil_only_mode'),
         default=defaults.get('tinfoil_only_mode', False),

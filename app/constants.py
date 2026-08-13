@@ -157,6 +157,7 @@ DEFAULT_SETTINGS = {
         "encrypt": True,
         "tinfoil_only_mode": False,
         "fast_transfer_mode": False,
+        "cyberfoil_virtual_compressed_stream": True,
         "public_key": "",
         "clientCertPub": "-----BEGIN PUBLIC KEY-----",
         "clientCertKey": "-----BEGIN PRIVATE KEY-----",

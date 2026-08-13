@@ -302,6 +302,11 @@ MOTD supports variables and optional API-backed variables:
 The encryption option only affects the Tinfoil payload; the web interface and admin UI remain accessible as normal.
 Encryption uses the Tinfoil public key and AES, and requires the `pycryptodome` dependency.
 `Fast transfer mode` prioritizes throughput for `/api/get_game` by skipping per-chunk transfer accounting; Activity live byte counters and exact transfer bytes may be less precise.
+`CyberFoil virtual compressed streaming` controls how CyberFoil receives compressed Switch content:
+- Enabled (default): `.nsz`, `.ncz`, and `.xcz` files are streamed as virtual uncompressed `.nsp`, `.nca`, and `.xci` data, so CyberFoil does not need to decompress them after download.
+- Disabled: AeroFoil serves the original compressed files unchanged, matching the legacy behavior.
+
+Virtual streams support CyberFoil's single byte-range requests. AeroFoil logs each use as `CyberFoil virtual stream: <source> -> <virtual output>`.
 The same section also includes login protection controls: temporary IP lockout after repeated failed auth attempts, a permanent IP/CIDR blacklist, and an admin view to list and unlock current temporary lockouts.
 
 </details>

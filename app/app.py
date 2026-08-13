@@ -49,6 +49,9 @@ import gc
 import ctypes
 import zipfile
 import tempfile
+from urllib.parse import quote
+
+from app import compressed_stream
 
 from app.db import add_access_event, get_access_events
 
@@ -828,7 +831,7 @@ def _enriched_file_allowed(entry, cap, block_unrated):
     return rating <= cap
 
 
-def _get_cached_shop_files(cap=None, block_unrated=True):
+def _get_cached_shop_files(cap=None, block_unrated=True, virtualize_compressed=False):
     state_token = get_library_cache_state_token()
     with shop_root_cache_lock:
         cached = shop_root_cache.get('files_enriched')
@@ -844,13 +847,24 @@ def _get_cached_shop_files(cap=None, block_unrated=True):
             shop_root_cache['files_enriched'] = enriched
             shop_root_cache['encrypted'] = {}
 
-    if cap is None:
-        return [{"url": e["url"], "size": e["size"]} for e in enriched]
-    return [
+    visible = enriched if cap is None else [
         {"url": e["url"], "size": e["size"]}
         for e in enriched
         if _enriched_file_allowed(e, cap, block_unrated)
     ]
+    if cap is None:
+        visible = [{"url": e["url"], "size": e["size"]} for e in enriched]
+    if not virtualize_compressed:
+        return visible
+
+    virtual_files = []
+    for entry in visible:
+        virtual_entry = dict(entry)
+        url, marker, listed_filename = str(entry['url']).partition('#')
+        if marker and compressed_stream.supports_virtual_stream(listed_filename):
+            virtual_entry['url'] = f'{url}#{compressed_stream.virtual_filename(listed_filename)}'
+        virtual_files.append(virtual_entry)
+    return virtual_files
 
 def _get_cached_encrypted_shop_payload(shop_payload, public_key, verified_host, filter_token=None):
     state_token = get_library_cache_state_token()
@@ -3668,9 +3682,17 @@ def index():
         shop = {
             "success": motd_text
         }
-        shop["files"] = _get_cached_shop_files(cap=cap, block_unrated=block_unrated)
+        is_cyberfoil = _is_cyberfoil_request()
+        virtual_compressed_stream = bool(
+            (app_settings.get('shop') or {}).get('cyberfoil_virtual_compressed_stream', True)
+        )
+        shop["files"] = _get_cached_shop_files(
+            cap=cap,
+            block_unrated=block_unrated,
+            virtualize_compressed=is_cyberfoil and virtual_compressed_stream,
+        )
 
-        if _is_cyberfoil_request():
+        if is_cyberfoil:
             _log_access(
                 kind='shop',
                 filename=request.full_path if request.query_string else request.path,
@@ -3683,7 +3705,7 @@ def index():
             shop,
             verified_host=request.verified_host,
             cache_kind='root',
-            filter_token=(cap, block_unrated),
+            filter_token=(cap, block_unrated, is_cyberfoil, virtual_compressed_stream),
         )
     
     if is_shop_client or (tinfoil_only_mode and not prefers_html):
@@ -4444,6 +4466,9 @@ def get_settings_api():
     settings['shop']['hauth_value'] = hauth_value or ''
     settings['shop']['hauth'] = bool(hauth_value)
     settings['shop']['fast_transfer_mode'] = bool(settings['shop'].get('fast_transfer_mode'))
+    settings['shop']['cyberfoil_virtual_compressed_stream'] = bool(
+        settings['shop'].get('cyberfoil_virtual_compressed_stream', True)
+    )
 
     # Surface the effective public key in the UI even if it isn't in settings.yaml yet.
     settings['shop']['public_key'] = settings['shop'].get('public_key') or TINFOIL_PUBLIC_KEY
@@ -4544,6 +4569,7 @@ def set_shop_settings_api():
     if security_data:
         set_security_settings(security_data)
     reload_conf()
+    _invalidate_shop_root_cache()
     resp = {
         'success': True,
         'errors': []
@@ -6965,7 +6991,51 @@ def serve_game(id):
     with _active_transfers_lock:
         _active_transfers[transfer_id] = meta
 
-    resp = send_from_directory(filedir, filename, conditional=True)
+    stream_compressed = (
+        _is_cyberfoil_request()
+        and bool((app_settings.get('shop') or {}).get('cyberfoil_virtual_compressed_stream', True))
+        and compressed_stream.supports_virtual_stream(filepath)
+    )
+    if stream_compressed:
+        try:
+            stream, output_size = compressed_stream.virtual_stream(filepath)
+            output_filename = compressed_stream.virtual_filename(filename)
+            byte_range = compressed_stream.parse_single_range(
+                request.headers.get('Range'), output_size,
+            )
+            if request.headers.get('Range') and byte_range is None:
+                with _active_transfers_lock:
+                    _active_transfers.pop(transfer_id, None)
+                return Response(status=416, headers={'Content-Range': f'bytes */{output_size}'})
+            if byte_range is not None:
+                range_start, range_end = byte_range
+                resp = Response(
+                    compressed_stream.iter_range(stream, range_start, range_end),
+                    status=206,
+                    mimetype='application/octet-stream',
+                )
+                resp.headers['Content-Range'] = f'bytes {range_start}-{range_end}/{output_size}'
+                resp.headers['Content-Length'] = str(range_end - range_start + 1)
+            else:
+                resp = Response(stream, mimetype='application/octet-stream')
+                resp.headers['Content-Length'] = str(output_size)
+            resp.headers['Content-Disposition'] = (
+                "attachment; filename*=UTF-8''" + quote(output_filename)
+            )
+            # Ranges are generated from the virtual stream (single range only).
+            resp.headers['Accept-Ranges'] = 'bytes'
+            logger.info(
+                'CyberFoil virtual stream: %s -> %s (%s bytes, range=%s)',
+                filename,
+                output_filename,
+                output_size,
+                request.headers.get('Range') or 'full',
+            )
+        except Exception:
+            logger.exception('Unable to create virtual compressed stream for %s', filepath)
+            resp = send_from_directory(filedir, filename, conditional=True)
+    else:
+        resp = send_from_directory(filedir, filename, conditional=True)
 
     session_key = _transfer_session_start(
         user=username,

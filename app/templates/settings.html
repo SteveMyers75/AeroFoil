@@ -720,6 +720,14 @@
                                 </div>
                             </div>
                             <div class="form-check">
+                                <input type="checkbox" class="form-check-input" id="cyberfoilVirtualCompressedStreamCheck"
+                                    aria-describedby="cyberfoilVirtualCompressedStreamCheckHelp">
+                                <label class="form-check-label" for="cyberfoilVirtualCompressedStreamCheck">CyberFoil virtual compressed streaming</label>
+                                <div id="cyberfoilVirtualCompressedStreamCheckHelp" class="form-text">
+                                    Serve NSZ, NCZ, and XCZ files to CyberFoil as virtual uncompressed NSP, NCA, and XCI streams. Disable to send the original compressed files instead.
+                                </div>
+                            </div>
+                            <div class="form-check">
                                 <input type="checkbox" class="form-check-input" id="blockUnratedCheck"
                                     aria-describedby="blockUnratedCheckHelp" onChange="submitContentFilterSettings()">
                                 <label class="form-check-label" for="blockUnratedCheck">Hide unrated titles from age-capped users</label>
@@ -1890,6 +1898,7 @@
             encrypt: getCheckboxStatus("encryptShopCheck"),
             tinfoil_only_mode: getCheckboxStatus("tinfoilOnlyModeCheck"),
             fast_transfer_mode: getCheckboxStatus("fastTransferModeCheck"),
+            cyberfoil_virtual_compressed_stream: getCheckboxStatus("cyberfoilVirtualCompressedStreamCheck"),
             auth_ip_lockout_enabled: getCheckboxStatus("authIpLockoutEnabledCheck"),
             auth_ip_lockout_threshold: threshold,
             auth_ip_lockout_window_seconds: windowSeconds,
@@ -3024,6 +3033,7 @@
             $("#encryptShopCheck").prop("checked", shopSettings['encrypt']);
             $("#tinfoilOnlyModeCheck").prop("checked", !!shopSettings['tinfoil_only_mode']);
             $("#fastTransferModeCheck").prop("checked", !!shopSettings['fast_transfer_mode']);
+            $("#cyberfoilVirtualCompressedStreamCheck").prop("checked", shopSettings['cyberfoil_virtual_compressed_stream'] !== false);
             const contentFilterSettings = result['content_filter'] || {};
             $("#blockUnratedCheck").prop("checked", contentFilterSettings['block_unrated'] !== false);
             syncTinfoilOnlyModeControls();
