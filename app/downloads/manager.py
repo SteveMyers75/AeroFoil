@@ -1594,16 +1594,17 @@ def _collect_completed_update_candidates(src_path):
     for path in _iter_completed_files(src_path) or []:
         filename = os.path.basename(path)
         version = _extract_update_version_from_name(filename)
-        if version is None:
+        # Archive releases can carry the same version markers as the extracted
+        # Switch payload. Never let an archive become the update candidate:
+        # it may be unpacked by a post-processing tool after the torrent has
+        # completed, and only supported Switch media formats are safe to import.
+        if version is None or not is_supported_content_path(path):
             continue
-        lowered = filename.lower()
         try:
             size = os.path.getsize(path)
         except OSError:
             size = 0
-        is_importable = 1 if _is_importable_download_file(path) else 0
-        rank = 1 if is_importable and not lowered.endswith(".nfo") else 0
-        candidates.append((version, rank, size, path))
+        candidates.append((version, size, path))
     candidates.sort(reverse=True)
     return candidates
 
@@ -1612,7 +1613,7 @@ def _select_completed_update_candidate(src_path):
     candidates = _collect_completed_update_candidates(src_path)
     if not candidates:
         return None, None
-    version, _, _, path = candidates[0]
+    version, _, path = candidates[0]
     return path, version
 
 

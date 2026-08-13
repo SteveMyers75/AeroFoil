@@ -24,6 +24,7 @@ from app.downloads.manager import (
     _iter_importable_download_files,
     _move_completed_with_reason,
     _normalize_imported_wrapped_files,
+    _select_completed_update_candidate,
     _search_and_queue,
     filter_download_search_results,
     get_download_ui_visibility,
@@ -2073,6 +2074,22 @@ class CompletedAdoptionTests(unittest.TestCase):
 
 
 class ManagedCompletionStateTests(unittest.TestCase):
+    @patch("app.downloads.manager.os.path.getsize", return_value=100)
+    @patch("app.downloads.manager._iter_completed_files")
+    def test_select_completed_update_candidate_ignores_rar_archives(
+        self,
+        completed_files_mock,
+        getsize_mock,
+    ):
+        archive_path = "C:\\tests\\completed\\Example Update v65536.rar"
+        payload_path = "C:\\tests\\completed\\Example Update v65536.nsp"
+        completed_files_mock.return_value = [archive_path, payload_path]
+
+        path, version = _select_completed_update_candidate("C:\\tests\\completed")
+
+        self.assertEqual(path, payload_path)
+        self.assertEqual(version, 65536)
+
     @patch("app.downloads.manager._select_completed_update_candidate")
     @patch("app.downloads.manager._move_generic_importable_files", return_value=("X:\\library\\Example Title [BASE].nsp", None))
     @patch("app.downloads.manager.get_libraries_path", return_value=["X:\\library"])
