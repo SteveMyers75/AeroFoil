@@ -3629,6 +3629,7 @@ def frozen_notice_api():
     return Response(b' ', mimetype='application/octet-stream')
 
 def access_shop():
+    static_asset_version = os.stat(os.path.join(app.static_folder, 'style.css')).st_mtime_ns
     return render_template(
         'index.html',
         title='Library',
@@ -3636,6 +3637,7 @@ def access_shop():
         valid_keys=app_settings['titles']['valid_keys'],
         identification_disabled=not app_settings['titles']['valid_keys'],
         download_ui_visibility=_get_download_template_visibility(),
+        static_asset_version=static_asset_version,
     )
 
 @access_required('shop')
