@@ -7065,7 +7065,7 @@ def serve_game(id):
             if byte_range is not None:
                 range_start, range_end = byte_range
                 resp = Response(
-                    compressed_stream.iter_range(stream, range_start, range_end),
+                    compressed_stream.virtual_range(filepath, range_start, range_end),
                     status=206,
                     mimetype='application/octet-stream',
                 )

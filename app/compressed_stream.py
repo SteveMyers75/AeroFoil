@@ -1,9 +1,4 @@
-"""Sequential virtual container streams for NSZ-family files.
-
-These responses deliberately do not implement byte ranges.  NCZ compression is
-sequential (except for its optional block format), and serving a range would
-otherwise require decompressing and discarding everything before that range.
-"""
+"""Virtual container streams and efficient range reads for NSZ-family files."""
 import os
 from pathlib import Path
 
@@ -154,26 +149,115 @@ def iter_decompressed_ncz(source, chunk_size=CHUNK_SIZE):
             yield data
 
 
-def _pfs0_header(files):
-    return _container_header(b'PFS0', files, 0x18, 0, pad_to_0x20=True)
+def iter_decompressed_ncz_range(source, start, end, chunk_size=CHUNK_SIZE):
+    """Yield an inclusive NCA range, seeking directly for NCZBLOCK sources."""
+    _, header_module, block_reader_module, aes128, zstd_decompressor = _load_nsz()
+    header, sections, total_size = _ncz_layout(source, header_module)
+    if start < 0 or end < start or end >= total_size:
+        raise ValueError('NCZ range is outside the decompressed file')
+
+    if start < NCZ_HEADER_SIZE:
+        header_end = min(end + 1, NCZ_HEADER_SIZE)
+        yield header[start:header_end]
+        start = header_end
+        if start > end:
+            return
+
+    compressed_data_offset = source.tell()
+    is_block = source.read(8) == b'NCZBLOCK'
+    source.seek(compressed_data_offset)
+    logical_start = start - NCZ_HEADER_SIZE
+    if is_block:
+        block_header = header_module.Block(source)
+        reader = block_reader_module.BlockDecompressorReader(source, block_header)
+        reader.seek(logical_start)
+    else:
+        reader = zstd_decompressor().stream_reader(source)
+        # Solid streams have no index; discard only the portion before this
+        # requested NCA range, rather than the whole virtual NSP prefix.
+        remaining = logical_start
+        while remaining:
+            discarded = reader.read(min(CHUNK_SIZE, remaining))
+            if not discarded:
+                raise ValueError('Unexpected end of compressed NCZ data')
+            remaining -= len(discarded)
+
+    output_position = start
+    first_section = True
+    for section in sections:
+        section_start = section.offset
+        if first_section:
+            first_section = False
+            section_start = max(section_start, NCZ_HEADER_SIZE)
+        section_end = section.offset + section.size
+        if output_position >= section_end:
+            continue
+        if output_position < section_start:
+            # Sections are contiguous in valid NCZ files. Keep the stream
+            # aligned if a malformed file has an unexpected gap.
+            gap = section_start - output_position
+            skipped = reader.read(gap)
+            if len(skipped) != gap:
+                raise ValueError('Unexpected end of compressed NCZ data')
+            output_position = section_start
+        if output_position > end:
+            return
+        wanted_end = min(end + 1, section_end)
+        crypto = aes128.AESCTR(section.cryptoKey, section.cryptoCounter) \
+            if section.cryptoType in (3, 4) else None
+        while output_position < wanted_end:
+            data = reader.read(min(chunk_size, wanted_end - output_position))
+            if not data:
+                raise ValueError('Unexpected end of compressed NCZ data')
+            if crypto is not None:
+                crypto.seek(output_position)
+                data = crypto.encrypt(data)
+            output_position += len(data)
+            yield data
+        if output_position > end:
+            return
+
+
+def _pfs0_header(files, data_start=None, string_table_size=None):
+    return _container_header(
+        b'PFS0',
+        files,
+        0x18,
+        0,
+        pad_to_0x20=True,
+        data_start=data_start,
+        string_table_size=string_table_size,
+    )
 
 
 def _hfs0_header(files):
     return _container_header(b'HFS0', files, 0x40, 0x28, pad_to_0x20=False)
 
 
-def _container_header(magic, files, entry_size, extra_size, pad_to_0x20):
+def _container_header(
+    magic,
+    files,
+    entry_size,
+    extra_size,
+    pad_to_0x20,
+    data_start=None,
+    string_table_size=None,
+):
     names = b''.join(name.encode('utf-8') + b'\0' for name, _ in files)
     raw_size = 0x10 + len(files) * entry_size + len(names)
-    string_size = len(names)
-    if pad_to_0x20:
+    string_size = max(len(names), int(string_table_size or 0))
+    if pad_to_0x20 and string_table_size is None:
         string_size += (-raw_size) % 0x20
     header_size = 0x10 + len(files) * entry_size + string_size
+    if data_start is None:
+        data_start = header_size
+    if data_start < header_size:
+        raise ValueError('Container data offset is smaller than its header')
     output = bytearray(magic)
     output += len(files).to_bytes(4, 'little')
     output += string_size.to_bytes(4, 'little')
     output += b'\0' * 4
-    offset = 0
+    offset = data_start - header_size
     name_offset = 0
     for name, size in files:
         output += offset.to_bytes(8, 'little')
@@ -217,6 +301,13 @@ def virtual_stream(path):
     raise ValueError('Unsupported compressed stream')
 
 
+def virtual_range(path, start, end):
+    """Return a direct range iterator where the virtual format permits it."""
+    if os.path.splitext(path)[1].lower() == '.nsz':
+        return _iter_nsz_range(path, start, end)
+    return iter_range(virtual_stream(path)[0], start, end)
+
+
 def _open(path):
     factory, _, _, _, _ = _load_nsz()
     source_path = Path(path)
@@ -246,8 +337,13 @@ def _iter_nsz(path):
     try:
         entries = [(entry, *_entry_info(entry)) for entry in container]
         files = [(name, size) for _, name, size, _ in entries]
-        header = _pfs0_header(files)
+        header = _pfs0_header(
+            files,
+            data_start=container.getFirstFileOffset(),
+            string_table_size=container.getStringTableSize(),
+        )
         yield header
+        yield b'\0' * (container.getFirstFileOffset() - len(header))
         for entry, _, _, compressed in entries:
             if compressed:
                 yield from iter_decompressed_ncz(entry)
@@ -257,11 +353,59 @@ def _iter_nsz(path):
         container.close()
 
 
+def _iter_nsz_range(path, start, end):
+    container = _open(path)
+    try:
+        entries = [(entry, *_entry_info(entry)) for entry in container]
+        files = [(name, size) for _, name, size, _ in entries]
+        data_start = container.getFirstFileOffset()
+        header = _pfs0_header(
+            files,
+            data_start=data_start,
+            string_table_size=container.getStringTableSize(),
+        )
+        total_size = data_start + sum(size for _, size in files)
+        if start < 0 or end < start or end >= total_size:
+            raise ValueError('NSP range is outside the virtual file')
+
+        if start < len(header):
+            header_end = min(end + 1, len(header))
+            yield header[start:header_end]
+            start = header_end
+        if start <= end and start < data_start:
+            padding_end = min(end + 1, data_start)
+            yield b'\0' * (padding_end - start)
+            start = padding_end
+
+        entry_start = data_start
+        for entry, _, size, compressed in entries:
+            entry_end = entry_start + size
+            if end < entry_start:
+                return
+            if start < entry_end and end >= entry_start:
+                local_start = max(0, start - entry_start)
+                local_end = min(size - 1, end - entry_start)
+                if compressed:
+                    yield from iter_decompressed_ncz_range(entry, local_start, local_end)
+                else:
+                    entry.seek(local_start)
+                    remaining = local_end - local_start + 1
+                    while remaining:
+                        data = entry.read(min(CHUNK_SIZE, remaining))
+                        if not data:
+                            raise ValueError('Unexpected end of container entry')
+                        remaining -= len(data)
+                        yield data
+            entry_start = entry_end
+    finally:
+        container.close()
+
+
 def _nsz_size(path):
     container = _open(path)
     try:
         files = [_entry_info(entry)[:2] for entry in container]
-        return len(_pfs0_header(files)) + sum(size for _, size in files)
+        return container.getFirstFileOffset() + sum(size for _, size in files)
     finally:
         container.close()
 

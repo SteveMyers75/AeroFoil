@@ -59,6 +59,12 @@ class _Container:
     def close(self):
         self.closed = True
 
+    def getFirstFileOffset(self):
+        return 0xF000
+
+    def getStringTableSize(self):
+        return 0x40
+
 
 class CompressedStreamTests(unittest.TestCase):
     def test_streams_solid_ncz_as_raw_nca(self):
@@ -67,6 +73,15 @@ class CompressedStreamTests(unittest.TestCase):
         with patch('app.compressed_stream._load_nsz', side_effect=_nsz_components):
             self.assertEqual(compressed_stream.decompressed_ncz_size(source), 0x4000 + len(payload))
             self.assertEqual(b''.join(compressed_stream.iter_decompressed_ncz(source)), b'H' * 0x4000 + payload)
+
+    def test_streams_only_requested_solid_ncz_range(self):
+        payload = b'compressed-section' * 100
+        source = io.BytesIO(_ncz(payload))
+        with patch('app.compressed_stream._load_nsz', side_effect=_nsz_components):
+            self.assertEqual(
+                b''.join(compressed_stream.iter_decompressed_ncz_range(source, 0x4005, 0x4014)),
+                payload[5:21],
+            )
 
     def test_virtual_nsz_rewrites_ncz_entry_and_pfs0_size(self):
         ncz_payload = b'virtual-nca-data'
@@ -83,7 +98,19 @@ class CompressedStreamTests(unittest.TestCase):
         self.assertEqual(int.from_bytes(data[4:8], 'little'), 2)
         self.assertIn(b'content.nca\0', data[:0x100])
         header_size = 0x10 + 2 * 0x18 + int.from_bytes(data[8:12], 'little')
-        self.assertEqual(data[header_size:], b'ticket' + b'H' * 0x4000 + ncz_payload)
+        self.assertEqual(data[header_size:0xF000], b'\0' * (0xF000 - header_size))
+        self.assertEqual(data[0xF000:], b'ticket' + b'H' * 0x4000 + ncz_payload)
+        self.assertEqual(int.from_bytes(data[0x10:0x18], 'little'), 0xF000 - header_size)
+
+    def test_virtual_nsz_range_seeks_directly_to_uncompressed_entry(self):
+        container = _Container([
+            _Entry('first.bin', b'first'),
+            _Entry('second.bin', b'second'),
+        ])
+        with patch('app.compressed_stream._open', return_value=container):
+            data = b''.join(compressed_stream._iter_nsz_range('Example.nsz', 0xF005, 0xF00A))
+
+        self.assertEqual(data, b'second')
 
     def test_virtual_names_match_uncompressed_formats(self):
         self.assertEqual(compressed_stream.virtual_filename('Example.nsz'), 'Example.nsp')
