@@ -1778,7 +1778,14 @@ def _process_tracked_completed_item_locked(key, info, bucket):
     if matched_id:
         bucket["matched_ids"].add(matched_id)
     move_info = _resolve_completed_update_info(info, match)
-    moved_result, move_reason = _move_completed_with_reason(match, move_info)
+    retain_torrent = (
+        str(info.get("protocol") or "").strip().lower() == "torrent"
+        and not _should_remove_completed_torrent(bucket.get("client_cfg"))
+    )
+    if retain_torrent:
+        moved_result, move_reason = _move_completed_with_reason(match, move_info, copy_files=True)
+    else:
+        moved_result, move_reason = _move_completed_with_reason(match, move_info)
     moved_match_paths = _coerce_moved_paths(moved_result)
     if not moved_match_paths:
         if _is_duplicate_reason(move_reason):
@@ -1788,10 +1795,7 @@ def _process_tracked_completed_item_locked(key, info, bucket):
             identity = _get_pending_identity(match) or _get_pending_identity(info)
             if identity:
                 _get_completed_identities_locked().add(identity)
-            if matched_id and not (
-                str(info.get("protocol") or "").strip().lower() == "torrent"
-                and not _should_remove_completed_torrent(bucket.get("client_cfg"))
-            ):
+            if matched_id and not retain_torrent:
                 ok, message = remove_completed_download(
                     str(info.get("protocol") or "").strip().lower(),
                     bucket["client_cfg"],
@@ -1813,10 +1817,7 @@ def _process_tracked_completed_item_locked(key, info, bucket):
     identity = _get_pending_identity(match) or _get_pending_identity(info)
     if identity:
         _get_completed_identities_locked().add(identity)
-    if matched_id and not (
-        str(info.get("protocol") or "").strip().lower() == "torrent"
-        and not _should_remove_completed_torrent(bucket.get("client_cfg"))
-    ):
+    if matched_id and not retain_torrent:
         ok, message = remove_completed_download(
             str(info.get("protocol") or "").strip().lower(),
             bucket["client_cfg"],
@@ -2012,7 +2013,7 @@ def _build_generic_import_destination(dest_root, src_path):
         basename = basename[:-4]
     return _ensure_unique_path(os.path.join(dest_root, basename))
 
-def _move_generic_importable_files(src_path, dest_root, excluded_paths=None):
+def _move_generic_importable_files(src_path, dest_root, excluded_paths=None, copy_files=False):
     excluded = {
         os.path.normcase(os.path.normpath(path))
         for path in (excluded_paths or [])
@@ -2030,11 +2031,15 @@ def _move_generic_importable_files(src_path, dest_root, excluded_paths=None):
     try:
         for import_path in importable_paths:
             dest_path = _build_generic_import_destination(dest_root, import_path)
-            shutil.move(import_path, dest_path)
+            if copy_files:
+                shutil.copy2(import_path, dest_path)
+            else:
+                shutil.move(import_path, dest_path)
             dest_path = _normalize_imported_wrapped_files(dest_path)
             moved_paths.append(dest_path)
-        _cleanup_download_path(src_path, dest_root)
-        logger.info("Moved download to library: %s", ", ".join(moved_paths))
+        if not copy_files:
+            _cleanup_download_path(src_path, dest_root)
+        logger.info("%s download to library: %s", "Copied" if copy_files else "Moved", ", ".join(moved_paths))
         return (moved_paths[0] if len(moved_paths) == 1 else moved_paths), None
     except Exception as e:
         logger.warning("Failed to move download %s: %s", src_path, e)
@@ -2077,7 +2082,7 @@ def _normalize_imported_wrapped_files(dest_path):
     return renamed_single_path
 
 
-def _move_completed_with_reason(item, update_info=None):
+def _move_completed_with_reason(item, update_info=None, copy_files=False):
     library_paths = get_libraries_path()
     if not library_paths:
         logger.warning("No library paths configured; cannot move download.")
@@ -2100,7 +2105,10 @@ def _move_completed_with_reason(item, update_info=None):
         title_name = update_info.get("title_name") or update_info.get("expected_name")
         update_path, actual_version = _select_completed_update_candidate(src_path)
         if not update_path or not actual_version:
-            moved_result, move_reason = _move_generic_importable_files(src_path, dest_root)
+            if copy_files:
+                moved_result, move_reason = _move_generic_importable_files(src_path, dest_root, copy_files=True)
+            else:
+                moved_result, move_reason = _move_generic_importable_files(src_path, dest_root)
             if moved_result:
                 logger.info(
                     "Imported completed download for %s without update payload; kept generic files from %s.",
@@ -2113,7 +2121,14 @@ def _move_completed_with_reason(item, update_info=None):
         highest_owned = _get_highest_owned_update_version(title_id)
         effective_highest_owned = max(highest_owned, _get_local_known_update_version(title_id))
         if actual_version <= effective_highest_owned:
-            moved_result, move_reason = _move_generic_importable_files(src_path, dest_root, excluded_paths=[update_path])
+            if copy_files:
+                moved_result, move_reason = _move_generic_importable_files(
+                    src_path, dest_root, excluded_paths=[update_path], copy_files=True,
+                )
+            else:
+                moved_result, move_reason = _move_generic_importable_files(
+                    src_path, dest_root, excluded_paths=[update_path],
+                )
             if moved_result:
                 logger.info(
                     "Skipped stale update %s v%s and imported remaining files from %s.",
@@ -2143,10 +2158,14 @@ def _move_completed_with_reason(item, update_info=None):
         dest_path = _ensure_unique_path(dest_path)
         try:
             os.makedirs(dest_dir, exist_ok=True)
-            shutil.move(update_path, dest_path)
-            logger.info("Moved update to library: %s", dest_path)
+            if copy_files:
+                shutil.copy2(update_path, dest_path)
+            else:
+                shutil.move(update_path, dest_path)
+            logger.info("%s update to library: %s", "Copied" if copy_files else "Moved", dest_path)
             _record_local_content_index(title_id=title_id, app_id=update_info.get("app_id"), app_type=APP_TYPE_UPD, version=actual_version)
-            _cleanup_download_path(src_path, dest_root)
+            if not copy_files:
+                _cleanup_download_path(src_path, dest_root)
             return dest_path, None
         except Exception as e:
             logger.warning("Failed to move update %s: %s", update_path, e)
@@ -2162,15 +2181,21 @@ def _move_completed_with_reason(item, update_info=None):
     duplicate_reason = _detect_duplicate_reason_for_path(src_path)
     if duplicate_reason:
         return None, duplicate_reason
-    moved_result, move_reason = _move_generic_importable_files(src_path, dest_root)
+    if copy_files:
+        moved_result, move_reason = _move_generic_importable_files(src_path, dest_root, copy_files=True)
+    else:
+        moved_result, move_reason = _move_generic_importable_files(src_path, dest_root)
     if moved_result:
         for moved_path in _coerce_moved_paths(moved_result):
             _record_imported_file_content(moved_path)
     return moved_result, move_reason
 
 
-def _move_completed(item, update_info=None):
-    moved_result, _ = _move_completed_with_reason(item, update_info=update_info)
+def _move_completed(item, update_info=None, copy_files=False):
+    if copy_files:
+        moved_result, _ = _move_completed_with_reason(item, update_info=update_info, copy_files=True)
+    else:
+        moved_result, _ = _move_completed_with_reason(item, update_info=update_info)
     return moved_result
 
 
