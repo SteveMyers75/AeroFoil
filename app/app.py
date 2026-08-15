@@ -576,7 +576,7 @@ def _render_motd_template(raw_motd):
         'backup_access': backup_access,
         'frozen': frozen,
         'client_uid': client_uid,
-        'remote_addr': str(request.remote_addr or ''),
+        'remote_addr': _effective_remote_addr(),
         'user_agent': str(request.user_agent.string or ''),
         'host': str(request.host or ''),
         'path': str(request.path or ''),
