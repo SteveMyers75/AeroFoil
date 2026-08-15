@@ -20,6 +20,7 @@ flask_app = None
 try:
     from app.app import app as flask_app
     from app.app import _app_has_deletable_files
+    from app.app import _build_library_download_files
     from app.app import _build_title_details_dlc_items
     from app.app import _build_deletable_version_map
     from app.app import _sort_library_rows_by_title_name
@@ -81,6 +82,33 @@ class LibraryHelperTests(unittest.TestCase):
             filepath=filepath,
             apps=list(linked_apps),
         )
+
+    @patch('app.app.os.path.isfile')
+    def test_build_library_download_files_exposes_existing_files_only(self, isfile_mock):
+        isfile_mock.side_effect = lambda path: path == 'X:\\fixture-root\\Example Base.nsp'
+        app_entry = SimpleNamespace(files=[
+            SimpleNamespace(
+                id=7,
+                filepath='X:\\fixture-root\\Example Base.nsp',
+                filename='Example Base.nsp',
+                size=123,
+            ),
+            SimpleNamespace(
+                id=8,
+                filepath='X:\\fixture-root\\missing.nsp',
+                filename='missing.nsp',
+                size=456,
+            ),
+        ])
+
+        files = _build_library_download_files(app_entry)
+
+        self.assertEqual(files, [{
+            'id': 7,
+            'filename': 'Example Base.nsp',
+            'size': 123,
+            'url': '/api/get_game/7?download=1',
+        }])
 
     def _make_test_temp_root(self, name):
         os.makedirs(TEST_TMP_ROOT, exist_ok=True)

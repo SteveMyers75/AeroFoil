@@ -6693,6 +6693,22 @@ def get_all_titles_api():
     })
 
 
+def _build_library_download_files(app_entry):
+    files = []
+    for file_entry in list(getattr(app_entry, 'files', []) or []):
+        file_id = getattr(file_entry, 'id', None)
+        filepath = str(getattr(file_entry, 'filepath', '') or '').strip()
+        if not file_id or not filepath or not os.path.isfile(filepath):
+            continue
+        files.append({
+            'id': int(file_id),
+            'filename': str(getattr(file_entry, 'filename', '') or os.path.basename(filepath)),
+            'size': int(getattr(file_entry, 'size', 0) or 0),
+            'url': f'/api/get_game/{int(file_id)}?download=1',
+        })
+    return files
+
+
 @app.get('/api/title-details')
 @access_required('shop')
 def get_title_details_api():
@@ -6770,6 +6786,11 @@ def get_title_details_api():
                 .filter(Apps.title_id == row.title_fk)
                 .all()
             )
+            files_by_app_pk = {
+                app.id: _build_library_download_files(app)
+                for app in title_apps
+            }
+            current_app_files = files_by_app_pk.get(row.app_pk, [])
             owned_base_count = sum(1 for app in title_apps if app.app_type == APP_TYPE_BASE and bool(app.owned))
             owned_update_count = sum(1 for app in title_apps if app.app_type == APP_TYPE_UPD and bool(app.owned))
             owned_dlc_count = sum(1 for app in title_apps if app.app_type == APP_TYPE_DLC and bool(app.owned))
@@ -6787,6 +6808,18 @@ def get_title_details_api():
             highest_owned_update_version = max(owned_update_versions, default=0)
             has_latest_version = highest_available_update_version <= 0 or highest_owned_update_version >= highest_available_update_version
             dlc_items, has_all_dlcs = _build_title_details_dlc_items(row.title_fk, row.title_id)
+            dlc_files_by_app_id = {}
+            for app in title_apps:
+                if app.app_type != APP_TYPE_DLC:
+                    continue
+                app_id = str(app.app_id or '').strip().upper()
+                if app_id:
+                    dlc_files_by_app_id.setdefault(app_id, []).extend(files_by_app_pk.get(app.id, []))
+            for dlc_item in dlc_items:
+                dlc_item['files'] = dlc_files_by_app_id.get(
+                    str(dlc_item.get('app_id') or '').strip().upper(),
+                    [],
+                )
             game = {
                 'id': app_info.get('id') or row.app_id,
                 'name': app_info.get('name') or row.app_id,
@@ -6804,6 +6837,7 @@ def get_title_details_api():
                 'app_type': row.app_type,
                 'owned': bool(row.owned),
                 'size': int(row.size or 0),
+                'files': current_app_files,
                 'owned_base_count': int(owned_base_count or 0),
                 'owned_update_count': int(owned_update_count or 0),
                 'owned_dlc_count': int(owned_dlc_count or 0),
@@ -6822,6 +6856,7 @@ def get_title_details_api():
                 versions = []
                 for upd in (
                     db.session.query(
+                        Apps.id.label('app_pk'),
                         Apps.app_id,
                         Apps.app_version,
                         Apps.owned,
@@ -6843,6 +6878,7 @@ def get_title_details_api():
                             False,
                         ),
                         'size': int(upd.size or 0),
+                        'files': files_by_app_pk.get(upd.app_pk, []),
                         'release_date': 'Unknown',
                     })
                 release_dates = {
@@ -6857,6 +6893,7 @@ def get_title_details_api():
                 dlc_versions = []
                 for dlc in (
                     db.session.query(
+                        Apps.id.label('app_pk'),
                         Apps.app_id,
                         Apps.app_version,
                         Apps.owned,
@@ -6878,6 +6915,7 @@ def get_title_details_api():
                             False,
                         ),
                         'size': int(dlc.size or 0),
+                        'files': files_by_app_pk.get(dlc.app_pk, []),
                         'release_date': 'Unknown',
                     })
                 dlc_versions.sort(key=lambda item: item['version'], reverse=True)
@@ -7132,6 +7170,7 @@ def serve_game(id):
     filepath = file_row.filepath
     filename = file_row.filename or os.path.basename(filepath)
     filedir = os.path.dirname(filepath)
+    force_download = str(request.args.get('download') or '').strip().lower() in ('1', 'true', 'yes')
     title_id = (file_row.title_id or '').strip().upper() or None
     fast_transfer_mode = bool((app_settings.get('shop') or {}).get('fast_transfer_mode'))
     stream_compressed = (
@@ -7196,9 +7235,9 @@ def serve_game(id):
             )
         except Exception:
             logger.exception('Unable to create virtual compressed stream for %s', filepath)
-            resp = send_from_directory(filedir, filename, conditional=True)
+            resp = send_from_directory(filedir, filename, conditional=True, as_attachment=force_download)
     else:
-        resp = send_from_directory(filedir, filename, conditional=True)
+        resp = send_from_directory(filedir, filename, conditional=True, as_attachment=force_download)
 
     session_key = _transfer_session_start(
         user=username,

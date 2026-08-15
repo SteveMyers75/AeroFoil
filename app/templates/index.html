@@ -2199,12 +2199,25 @@
             }
             return Number(Boolean(right?.owned)) - Number(Boolean(left?.owned));
         });
+        const buildLibraryDownloadLinks = (files) => (Array.isArray(files) ? files : [])
+            .filter(file => file && file.url)
+            .map(file => `
+                <a class="btn btn-outline-primary btn-sm" href="${escapeHtml(String(file.url))}" download
+                    title="Download ${escapeHtml(String(file.filename || 'library file'))}">
+                    <i class="bi bi-download"></i> Download
+                </a>
+            `).join('');
+        const currentFileDownloads = buildLibraryDownloadLinks(game.files);
         const canVersionActions = canManageDownloads && sortedVersions.length > 0;
+        const hasVersionActions = canVersionActions || sortedVersions.some(version =>
+            Array.isArray(version.files) && version.files.some(file => file && file.url)
+        );
         const versionRows = sortedVersions.map(version => {
-            const actionCell = canVersionActions
+            const actionCell = hasVersionActions
                 ? `
                     <td class="text-end">
-                        ${version.deletable
+                        ${buildLibraryDownloadLinks(version.files)}
+                        ${canManageDownloads && version.deletable
                             ? `<button type="button" class="btn btn-outline-danger btn-sm details-delete-version-btn"
                                     data-app-id="${escapeHtml(String(version.app_id || game.app_id || ''))}"
                                     data-app-type="${escapeHtml(String(version.app_type || game.app_type || ''))}"
@@ -2213,7 +2226,7 @@
                                     <i class="bi bi-trash"></i>
                                </button>`
                             : ''}
-                        ${!version.owned
+                        ${canManageDownloads && !version.owned
                             ? `<button type="button" class="btn btn-outline-secondary btn-sm details-ignore-content-btn"
                                     title="${version.ignored ? 'Restore update to completeness checks' : 'Ignore update for completeness checks'}"
                                     data-app-id="${escapeHtml(String(version.app_id || game.app_id || ''))}"
@@ -2324,7 +2337,17 @@
                 </div>
             `
             : '';
-        const canDlcActions = canManageDownloads && dlcList.length > 0;
+        const libraryFilesRow = currentFileDownloads
+            ? `
+                <div class="mt-3">
+                    <div class="small text-muted mb-1">Library files</div>
+                    <div class="d-flex flex-wrap gap-2">${currentFileDownloads}</div>
+                </div>
+            `
+            : '';
+        const canDlcActions = (canManageDownloads || dlcList.some(dlc =>
+            Array.isArray(dlc.files) && dlc.files.some(file => file && file.url)
+        )) && dlcList.length > 0;
         const dlcRows = dlcList.map(dlc => {
             const name = escapeHtml(dlc.name || dlc.app_id || '-');
             const status = dlc.owned ? 'Owned' : (dlc.ignored ? 'Ignored' : 'Missing');
@@ -2336,7 +2359,8 @@
             const actionCell = canDlcActions
                 ? `
                     <td class="text-end">
-                        ${!dlc.owned && !dlc.ignored && dlcSearchQuery
+                        ${buildLibraryDownloadLinks(dlc.files)}
+                        ${canManageDownloads && !dlc.owned && !dlc.ignored && dlcSearchQuery
                             ? `<button type="button" class="btn btn-outline-warning btn-sm details-dlc-search-btn"
                                     data-title-id="${escapeHtml(String(game.title_id || ''))}"
                                     data-query="${escapeHtml(dlcSearchQuery)}"
@@ -2344,7 +2368,7 @@
                                     <i class="bi bi-cloud-arrow-down"></i>
                                </button>`
                             : ''}
-                        ${!dlc.owned
+                        ${canManageDownloads && !dlc.owned
                             ? `<button type="button" class="btn btn-outline-secondary btn-sm details-ignore-content-btn ms-1"
                                     title="${dlc.ignored ? 'Restore DLC to completeness checks' : 'Ignore DLC for completeness checks'}"
                                     data-app-id="${escapeHtml(String(dlc.app_id || ''))}"
@@ -2378,7 +2402,7 @@
                                      <th scope="col">Status</th>
                                      <th scope="col">Size</th>
                                      <th scope="col">Release date</th>
-                                     ${canVersionActions ? '<th scope="col" class="text-end">Actions</th>' : ''}
+                                    ${hasVersionActions ? '<th scope="col" class="text-end">Actions</th>' : ''}
                                  </tr>
                              </thead>
                             <tbody>
@@ -2449,7 +2473,8 @@
 
         if (dlcList.length > 0 || availableCheats.length > 0) {
             $('#detailsVersions').html(`
-                ${actionRow}
+                        ${actionRow}
+                        ${libraryFilesRow}
                 ${customSearchRow}
                 <ul class="nav nav-tabs mb-2 ${actionRow ? 'mt-3' : ''}" id="detailsListTabs" role="tablist">
                     <li class="nav-item" role="presentation">
@@ -2493,6 +2518,7 @@
         } else {
             $('#detailsVersions').html(`
                 ${actionRow}
+                ${libraryFilesRow}
                 ${customSearchRow}
                 <div class="tab-content" id="detailsTabContent">
                     <div class="tab-pane show active details-tab-pane" id="details-updates-pane" role="tabpanel">
