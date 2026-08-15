@@ -36,6 +36,7 @@ from app.utils import *
 from app.library import *
 from app.library import _get_nsz_runner, _ensure_unique_path
 from app import titledb
+from app import cheats
 from app.title_requests import create_title_request, list_requests
 import requests
 import re
@@ -715,7 +716,7 @@ def _get_titledb_aware_state_token():
         titledb_token = str(titles.get_titledb_cache_token() or 'missing')
     except Exception:
         titledb_token = 'missing'
-    return f"{library_token}::{titledb_token}"
+    return f"{library_token}::{titledb_token}::{cheats.cheat_state_token()}"
 
 
 def _get_cached_titles_total(cache_key):
@@ -1498,21 +1499,75 @@ def _build_shop_sections_payload(limit, full_catalog=False):
         if all_limit is not None:
             all_items = all_items[:all_limit]
 
+        sections = [
+            {'id': 'new', 'title': 'New', 'items': new_items},
+            {'id': 'recommended', 'title': 'Recommended', 'items': recommended_items},
+            {'id': 'updates', 'title': 'Updates', 'items': update_items},
+            {'id': 'dlc', 'title': 'DLC', 'items': dlc_items},
+            {
+                'id': 'all',
+                'title': 'All',
+                'items': all_items,
+                'total': all_total,
+                'truncated': len(all_items) < all_total
+            }
+        ]
+        if full_catalog and bool((app_settings.get('cheats') or {}).get('enabled', True)):
+            cheat_items = _build_cyberfoil_cheat_items()
+            sections.append({
+                'id': 'cheats',
+                'title': 'Cheats',
+                'items': cheat_items,
+                'total': len(cheat_items),
+                'truncated': False,
+            })
         return {
-            'sections': [
-                {'id': 'new', 'title': 'New', 'items': new_items},
-                {'id': 'recommended', 'title': 'Recommended', 'items': recommended_items},
-                {'id': 'updates', 'title': 'Updates', 'items': update_items},
-                {'id': 'dlc', 'title': 'DLC', 'items': dlc_items},
-                {
-                    'id': 'all',
-                    'title': 'All',
-                    'items': all_items,
-                    'total': all_total,
-                    'truncated': len(all_items) < all_total
-                }
-            ]
+            'sections': sections
         }
+
+
+def _build_cyberfoil_cheat_items():
+    """Return versioned cheat entries for the CyberFoil catalogue.
+
+    Entries deliberately carry a normal URL/size pair, making them browseable by
+    current clients while providing the title/build metadata newer clients need to
+    place a file in Atmosphere's cheats directory.
+    """
+    owned_title_ids = {
+        str(row[0] or '').upper()
+        for row in (
+            db.session.query(Titles.title_id)
+            .join(Apps, Apps.title_id == Titles.id)
+            .filter(Apps.owned.is_(True), Apps.app_type == APP_TYPE_BASE)
+            .distinct()
+            .all()
+        )
+    }
+    items = []
+    with titles.titledb_session() as titledb_loaded:
+        for cheat in cheats.list_cheats():
+            title_id = cheat['title_id']
+            if title_id not in owned_title_ids:
+                continue
+            info = titles.get_game_info(title_id) if titledb_loaded else {}
+            name = str((info or {}).get('name') or title_id)
+            build_id = cheat['build_id']
+            icon_url = f'/api/shop/icon/{title_id}'
+            items.append({
+                'name': f'{name} — {build_id}',
+                'title_name': name,
+                'title_id': title_id,
+                'build_id': build_id,
+                'app_type': 'CHEAT',
+                'category': 'Cheats',
+                'icon_url': icon_url,
+                'iconUrl': icon_url,
+                'url': f'/api/cheats/{title_id}/{build_id}',
+                'size': int(cheat['size']),
+                'filename': f'{build_id}.txt',
+                'note': str(cheat.get('note') or ''),
+            })
+    return sorted(items, key=lambda item: (item['title_name'].lower(), item['build_id']))
 
 def _refresh_shop_sections_cache(limit):
     global shop_sections_refresh_running
@@ -2882,6 +2937,35 @@ def _is_shop_client_request():
     return _has_tinfoil_header_set() or _is_shop_client_allowed_for_external()
 
 
+def _request_has_cheat_access():
+    """Resolve the current shop user's cheat permission without changing auth flow."""
+    try:
+        if current_user.is_authenticated:
+            return bool(current_user.has_access('cheats'))
+    except Exception:
+        pass
+    username = _get_request_user()
+    if username:
+        user = User.query.filter_by(user=username).first()
+        return bool(user and user.has_access('cheats'))
+    # A public shop has no per-user identity to apply a user permission to.
+    return bool((app_settings.get('shop') or {}).get('public', False))
+
+
+def _filter_cheat_section(payload, allowed):
+    if allowed:
+        return payload
+    sections = (payload or {}).get('sections')
+    if not isinstance(sections, list):
+        return payload
+    filtered = [section for section in sections if str((section or {}).get('id') or '') != 'cheats']
+    if len(filtered) == len(sections):
+        return payload
+    result = dict(payload)
+    result['sections'] = filtered
+    return result
+
+
 def _log_access(
     kind,
     title_id=None,
@@ -3780,6 +3864,15 @@ def upload_page():
     return render_template(
         'upload.html',
         title='Upload',
+        admin_account_created=admin_account_created())
+
+
+@app.route('/cheats')
+@access_required('admin')
+def cheats_page():
+    return render_template(
+        'cheats.html',
+        title='Cheats',
         admin_account_created=admin_account_created())
 
 
@@ -6657,6 +6750,18 @@ def get_title_details_api():
 
     game = None
     if row:
+        title_cheats = []
+        if _request_has_cheat_access():
+            title_cheats = [
+                {
+                    'build_id': cheat['build_id'],
+                    'size': int(cheat['size']),
+                    'note': str(cheat.get('note') or ''),
+                    'url': f"/api/cheats/{row.title_id}/{cheat['build_id']}",
+                }
+                for cheat in cheats.list_cheats()
+                if cheat['title_id'] == row.title_id
+            ]
         with titles.titledb_session():
             title_info = titles.get_game_info(row.title_id) or {}
             app_info = title_info if row.app_type == APP_TYPE_BASE else (titles.get_game_info(row.app_id) or title_info)
@@ -6711,6 +6816,7 @@ def get_title_details_api():
                     item for item in dlc_items
                     if not item.get('owned') and not item.get('ignored')
                 ],
+                'cheats': title_cheats,
             }
             if row.app_type == APP_TYPE_BASE:
                 versions = []
@@ -7259,14 +7365,120 @@ def shop_sections_api():
     # section caches above stay user-agnostic.
     cap, block_unrated = _user_rating_cap()
     response_payload = _filter_sections_payload(payload, cap, block_unrated)
+    cheat_access = _request_has_cheat_access()
+    if is_cyberfoil:
+        response_payload = _filter_cheat_section(response_payload, cheat_access)
 
     return _respond_with_shop_payload(
         response_payload,
         cache_kind='sections',
         cache_limit=cache_limit,
         full_catalog=is_cyberfoil,
-        filter_token=(cap, block_unrated),
+        filter_token=(cap, block_unrated, cheat_access),
     )
+
+
+@app.get('/api/cheats')
+@access_required('shop')
+def list_cheats_api():
+    if not _request_has_cheat_access():
+        return jsonify({'success': False, 'error': 'Cheat access is disabled for this account.'}), 403
+    return jsonify({'success': True, 'cheats': _build_cyberfoil_cheat_items()})
+
+
+@app.get('/api/cheats/<title_id>/<build_id>')
+@tinfoil_access
+def download_cheat_api(title_id, build_id):
+    if not _request_has_cheat_access():
+        return tinfoil_error('Cheat access is disabled for this account.')
+    data = cheats.read_cheat(title_id, build_id)
+    if data is None:
+        return jsonify({'success': False, 'error': 'cheat_not_found'}), 404
+    normalized_build_id = cheats.normalize_build_id(build_id)
+    response = Response(data, mimetype='text/plain')
+    response.headers['Content-Disposition'] = (
+        f'attachment; filename="{normalized_build_id}.txt"'
+    )
+    return response
+
+
+@app.post('/api/cheats')
+@access_required('admin')
+def upload_cheat_api():
+    upload = request.files.get('file')
+    pasted_content = request.form.get('content')
+    note = str(request.form.get('note') or '').strip()
+    if len(note) > 1000:
+        return jsonify({'success': False, 'error': 'Cheat note must be 1000 characters or less.'}), 400
+    if upload is not None and upload.filename:
+        cheat_data = upload.read()
+    elif pasted_content is not None and pasted_content.strip():
+        cheat_data = pasted_content.encode('utf-8')
+    else:
+        return jsonify({'success': False, 'error': 'Provide a cheat file or paste cheat content.'}), 400
+    try:
+        cheat = cheats.save_cheat(
+            request.form.get('title_id'), request.form.get('build_id'), cheat_data)
+        cheat['note'] = cheats.set_cheat_note(
+            cheat['title_id'], cheat['build_id'], note)
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+    _invalidate_shop_root_cache()
+    with shop_sections_cache_lock:
+        shop_sections_cache['payload'] = None
+        shop_sections_cache['encrypted'] = {}
+    return jsonify({'success': True, 'cheat': cheat})
+
+
+@app.delete('/api/cheats/<title_id>/<build_id>')
+@access_required('admin')
+def delete_cheat_api(title_id, build_id):
+    if not cheats.delete_cheat(title_id, build_id):
+        return jsonify({'success': False, 'error': 'cheat_not_found'}), 404
+    _invalidate_shop_root_cache()
+    with shop_sections_cache_lock:
+        shop_sections_cache['payload'] = None
+        shop_sections_cache['encrypted'] = {}
+    return jsonify({'success': True})
+
+
+@app.post('/api/cheats/sync')
+@access_required('admin')
+def sync_cheats_api():
+    data = request.get_json(silent=True) or {}
+    sync_url = str(data.get('url') or (app_settings.get('cheats') or {}).get('sync_url') or '').strip()
+    if not sync_url.lower().startswith(('https://', 'http://')):
+        return jsonify({'success': False, 'error': 'Configure an HTTP(S) cheat ZIP URL first.'}), 400
+    try:
+        response = requests.get(sync_url, timeout=(10, 90))
+        response.raise_for_status()
+        result = cheats.import_zip(response.content)
+    except requests.RequestException as exc:
+        return jsonify({'success': False, 'error': f'Cheat sync failed: {exc}'}), 502
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+    _invalidate_shop_root_cache()
+    with shop_sections_cache_lock:
+        shop_sections_cache['payload'] = None
+        shop_sections_cache['encrypted'] = {}
+    return jsonify({'success': True, **result})
+
+
+@app.post('/api/settings/cheats')
+@access_required('admin')
+def set_cheats_settings_api():
+    data = request.get_json(silent=True) or {}
+    updates = {}
+    if 'enabled' in data:
+        updates['enabled'] = bool(data.get('enabled'))
+    if 'sync_url' in data:
+        updates['sync_url'] = str(data.get('sync_url') or '').strip()
+    set_cheats_settings(updates)
+    reload_conf()
+    with shop_sections_cache_lock:
+        shop_sections_cache['payload'] = None
+        shop_sections_cache['encrypted'] = {}
+    return jsonify({'success': True})
 
 
 @app.get('/api/shop/icon/<title_id>')

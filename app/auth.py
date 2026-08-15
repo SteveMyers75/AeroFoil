@@ -715,7 +715,7 @@ def normalize_max_rating(value):
     return rating if rating in ESRB_VALID_AGES else None
 
 
-def create_or_update_user(username, password, admin_access=False, shop_access=False, backup_access=False, max_rating=None):
+def create_or_update_user(username, password, admin_access=False, shop_access=False, backup_access=False, cheat_access=True, max_rating=None):
     """
     Create a new user or update an existing user with the given credentials and access rights.
     """
@@ -726,6 +726,7 @@ def create_or_update_user(username, password, admin_access=False, shop_access=Fa
         user.admin_access = admin_access
         user.shop_access = shop_access
         user.backup_access = backup_access
+        user.cheat_access = cheat_access
         user.max_rating = max_rating
         if getattr(user, 'frozen', False) and admin_access:
             user.frozen = False
@@ -733,7 +734,7 @@ def create_or_update_user(username, password, admin_access=False, shop_access=Fa
         user.password = generate_password_hash(password, method='scrypt')
     else:
         logger.info(f'Creating new user {username}')
-        new_user = User(user=username, password=generate_password_hash(password, method='scrypt'), admin_access=admin_access, shop_access=shop_access, backup_access=backup_access, max_rating=max_rating)
+        new_user = User(user=username, password=generate_password_hash(password, method='scrypt'), admin_access=admin_access, shop_access=shop_access, backup_access=backup_access, cheat_access=cheat_access, max_rating=max_rating)
         db.session.add(new_user)
     db.session.commit()
     _invalidate_admin_exists_cache()
@@ -750,11 +751,13 @@ def init_user_from_environment(environment_name, admin=False):
             admin_access = True
             shop_access = True
             backup_access = True
+            cheat_access = True
         else:
             logger.info('Initializing a regular user from environment variable...')
             admin_access = False
             shop_access = True
             backup_access = False
+            cheat_access = True
 
         if not admin:
             existing_admin = admin_account_created()
@@ -762,7 +765,7 @@ def init_user_from_environment(environment_name, admin=False):
                 logger.error(f'Error creating user {username}, first account created must be admin')
                 return
 
-        create_or_update_user(username, password, admin_access, shop_access, backup_access)
+        create_or_update_user(username, password, admin_access, shop_access, backup_access, cheat_access)
 
 def init_users(app):
     with app.app_context():
@@ -866,6 +869,7 @@ def get_users():
             User.admin_access,
             User.shop_access,
             User.backup_access,
+            User.cheat_access,
             User.frozen,
             User.frozen_message,
             User.max_rating,
@@ -1068,13 +1072,14 @@ def update_user():
     admin_access = data.get('admin_access')
     shop_access = data.get('shop_access')
     backup_access = data.get('backup_access')
+    cheat_access = data.get('cheat_access')
     max_rating = normalize_max_rating(data.get('max_rating'))
 
     if not user_id:
         errors.append('Missing user id.')
     if not username:
         errors.append('Username is required.')
-    if admin_access is None or shop_access is None or backup_access is None:
+    if admin_access is None or shop_access is None or backup_access is None or cheat_access is None:
         errors.append('Missing access configuration.')
 
     user = User.query.filter_by(id=user_id).first() if not errors else None
@@ -1097,10 +1102,12 @@ def update_user():
         if admin_access:
             shop_access = True
             backup_access = True
+            cheat_access = True
         user.user = username
         user.admin_access = admin_access
         user.shop_access = shop_access
         user.backup_access = backup_access
+        user.cheat_access = cheat_access
         user.max_rating = max_rating
         if getattr(user, 'frozen', False) and admin_access:
             user.frozen = False
@@ -1176,9 +1183,11 @@ def signup_post():
     if admin_access:
         shop_access = True
         backup_access = True
+        cheat_access = True
     else:
         shop_access = data['shop_access']
         backup_access = data['backup_access']
+        cheat_access = data.get('cheat_access', True)
 
     user = User.query.filter_by(user=username).first() # if this returns a user, then the user already exists in database
     
@@ -1198,7 +1207,7 @@ def signup_post():
         return jsonify(resp)
 
     # create a new user with the form data. Hash the password so the plaintext version isn't saved.
-    create_or_update_user(username, password, admin_access, shop_access, backup_access, max_rating=max_rating)
+    create_or_update_user(username, password, admin_access, shop_access, backup_access, cheat_access, max_rating=max_rating)
     
     logger.info(f'Successfully created user {username}.')
 

@@ -24,6 +24,7 @@ The project is still in development, expect things to break or change without no
   - [Environment variables](#environment-variables)
   - [Python](#using-python)
   - [CyberFoil setup](#cyberfoil-setup)
+  - [Cheats](#cheats)
   - [Save backups](#save-backups-save-sync)
   - [Requests](#requests)
 - [Usage](#usage)
@@ -151,6 +152,20 @@ In CyberFoil, set the AeroFoil Remote URL in Settings:
  - URL: `http://<server-ip>:8465` (or `https://` if using an SSL-enabled reverse proxy) and port 443
  - Username: username as created in AeroFoil settings (if the remote is private)
  - Password: password as created in AeroFoil settings (if the remote is private)
+
+## Cheats
+
+AeroFoil includes an admin Cheat Manager under **Content → Cheats** for Atmosphère-compatible cheat files. Cheats are associated with a title ID and build ID, then stored as `<build-id>.txt`.
+
+- Choose a title from the library search or enter a title ID manually for a title that is not yet in the library.
+- Add a cheat by uploading a `.txt` file or pasting its text directly. An optional note is shown in the manager list.
+- Download or delete individual cheat files from the list.
+- Optionally sync a ZIP archive. The importer recognizes common structures, including `<title-id>/cheats/<build-id>.txt` and `atmosphere/contents/<title-id>/cheats/<build-id>.txt`.
+- The [switch-cheats-db latest `titles_complete.zip`](https://github.com/HamletDuFromage/switch-cheats-db/releases/latest/download/titles_complete.zip) archive is a compatible sync source.
+
+Enable **Show the Cheats section in CyberFoil** at the top of the manager and save the setting to advertise a versioned **Cheats** section to CyberFoil. Only cheats whose title has an owned base title in the library are included in that section.
+
+Cheat management is admin-only. In **Users**, enable the **Cheats** permission for each account that may browse or download cheats from a private shop. Disabling it hides the CyberFoil Cheats section and denies the cheat APIs for that user. Public shops cannot apply this permission because requests have no per-user identity.
 
 ## Save backups (Save Sync)
 AeroFoil supports per-user save backup management when the user has the **Backup** flag enabled:

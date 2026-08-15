@@ -31,7 +31,7 @@
             aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
             <span class="navbar-toggler-icon"></span>
         </button>
-        {% set content_titles = ['Downloads', 'Upload', 'Manage'] %}
+        {% set content_titles = ['Downloads', 'Upload', 'Manage', 'Cheats'] %}
         {% set backups_titles = ['Save Data Backups'] %}
         {% set admin_titles = ['Activity', 'Users'] %}
         <div class="collapse navbar-collapse" id="navbarNav">
@@ -60,6 +60,7 @@
                     <ul class="dropdown-menu">
                         <li><a class="dropdown-item{% if title == 'Downloads' %} active{% endif %}" href="/downloads">Downloads</a></li>
                         <li><a class="dropdown-item{% if title == 'Upload' %} active{% endif %}" href="/upload">Upload</a></li>
+                        <li><a class="dropdown-item{% if title == 'Cheats' %} active{% endif %}" href="/cheats">Cheats</a></li>
                         <li><a class="dropdown-item{% if title == 'Manage' %} active{% endif %}" href="/manage">Manage</a></li>
                     </ul>
                 </li>

@@ -574,6 +574,16 @@ def _normalize_content_filter_settings(raw_content_filter):
     return merged
 
 
+def _normalize_cheats_settings(raw_cheats):
+    defaults = DEFAULT_SETTINGS.get('cheats', {}) or {}
+    merged = defaults.copy()
+    if isinstance(raw_cheats, dict):
+        merged.update(raw_cheats)
+    merged['enabled'] = _coerce_bool(merged.get('enabled'), default=defaults.get('enabled', True))
+    merged['sync_url'] = str(merged.get('sync_url') or '').strip()
+    return merged
+
+
 def _validate_shop_public_key(public_key_pem):
     key_text = str(public_key_pem or '').strip()
     if not key_text:
@@ -719,6 +729,7 @@ def load_settings(force_reload=False):
         _merge_section('shop')
         _merge_section('titles')
         _merge_section('library')
+        _merge_section('cheats')
         _merge_section('content_filter')
 
         env_trust = _read_env_bool('AEROFOIL_TRUST_PROXY_HEADERS')
@@ -753,6 +764,7 @@ def load_settings(force_reload=False):
         settings['downloads'] = _normalize_download_settings(settings.get('downloads'))
         settings['titles'] = _normalize_titles_settings(settings.get('titles'))
         settings['shop'] = _normalize_shop_settings(settings.get('shop'))
+        settings['cheats'] = _normalize_cheats_settings(settings.get('cheats'))
         settings['content_filter'] = _normalize_content_filter_settings(settings.get('content_filter'))
         settings['library']['conversion_staging_dir'] = _normalize_conversion_staging_dir(
             settings['library'].get('conversion_staging_dir')
@@ -778,6 +790,16 @@ def set_security_settings(data):
     settings.setdefault('security', {})
     settings['security'].update(data or {})
     settings['security'] = _normalize_security_settings(settings.get('security'))
+    with open(CONFIG_FILE, 'w') as yaml_file:
+        yaml.dump(settings, yaml_file)
+    _invalidate_settings_cache()
+
+
+def set_cheats_settings(data):
+    settings = load_settings(force_reload=True)
+    settings.setdefault('cheats', {})
+    settings['cheats'].update(data or {})
+    settings['cheats'] = _normalize_cheats_settings(settings.get('cheats'))
     with open(CONFIG_FILE, 'w') as yaml_file:
         yaml.dump(settings, yaml_file)
     _invalidate_settings_cache()
