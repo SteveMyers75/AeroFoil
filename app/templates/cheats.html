@@ -43,6 +43,10 @@
         </div>
     </div>
 
+    <div class="mb-3">
+        <label class="form-label" for="cheatListSearch">Search available cheats</label>
+        <input id="cheatListSearch" class="form-control" type="search" placeholder="Search by title, title ID, build ID, or note" autocomplete="off">
+    </div>
     <div id="cheatStatus" class="small mb-2" role="status"></div>
     <div class="table-responsive"><table class="table table-dark table-hover align-middle"><thead><tr><th>Title</th><th>Title ID</th><th>Build ID</th><th>Note</th><th>Size</th><th></th></tr></thead><tbody id="cheatRows"></tbody></table></div>
 </div>
@@ -52,6 +56,7 @@ function cheatStatus(message, danger) { $('#cheatStatus').toggleClass('text-dang
 function cheatBytes(bytes) { return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`; }
 function escapeCheatHtml(text) { return $('<div>').text(text || '').html(); }
 let cheatTitleSearchTimer = null;
+let availableCheats = [];
 function searchCheatTitles() {
     const query = String($('#cheatTitleSearch').val() || '').trim();
     const results = $('#cheatTitleSearchResults').empty();
@@ -74,10 +79,12 @@ function searchCheatTitles() {
         });
     }, 250);
 }
-function loadCheats() {
-    $.getJSON('/api/cheats', function(result) {
-        const rows = $('#cheatRows').empty();
-        (result.cheats || []).forEach(item => {
+function renderCheats() {
+    const query = String($('#cheatListSearch').val() || '').trim().toLowerCase();
+    const cheats = availableCheats.filter(item => !query || [item.title_name, item.title_id, item.build_id, item.note]
+        .some(value => String(value || '').toLowerCase().includes(query)));
+    const rows = $('#cheatRows').empty();
+    cheats.forEach(item => {
             const row = $('<tr>');
             row.append($('<td>').text(item.title_name || item.title_id));
             row.append($('<td>').text(item.title_id)); row.append($('<td>').text(item.build_id)); row.append($('<td>').text(item.note || '—')); row.append($('<td>').text(cheatBytes(item.size || 0)));
@@ -88,8 +95,14 @@ function loadCheats() {
                 $.ajax({url: `/api/cheats/${encodeURIComponent(item.title_id)}/${encodeURIComponent(item.build_id)}`, type: 'DELETE'}).done(loadCheats);
             });
             row.append($('<td>').append(download, remove)); rows.append(row);
-        });
-        if (!(result.cheats || []).length) rows.append('<tr><td colspan="6" class="text-muted">No cheats are available for titles in this library.</td></tr>');
+    });
+    if (!availableCheats.length) rows.append('<tr><td colspan="6" class="text-muted">No cheats are available for titles in this library.</td></tr>');
+    else if (!cheats.length) rows.append('<tr><td colspan="6" class="text-muted">No available cheats match your search.</td></tr>');
+}
+function loadCheats() {
+    $.getJSON('/api/cheats', function(result) {
+        availableCheats = result.cheats || [];
+        renderCheats();
     });
 }
 $('#cheatUploadForm').on('submit', function(event) {
@@ -99,6 +112,7 @@ $('#cheatUploadForm').on('submit', function(event) {
     $.ajax({url:'/api/cheats', type:'POST', data:form, processData:false, contentType:false}).done(function(result) { cheatStatus('Cheat uploaded.'); $('#cheatUploadForm')[0].reset(); loadCheats(); }).fail(function(xhr) { cheatStatus(xhr.responseJSON?.error || 'Upload failed.', true); });
 });
 $('#cheatTitleSearch').on('input', searchCheatTitles);
+$('#cheatListSearch').on('input', renderCheats);
 function saveCheatSettings(payload, message) { $.ajax({url:'/api/settings/cheats', type:'POST', contentType:'application/json', data:JSON.stringify(payload)}).done(function() { cheatStatus(message); }).fail(function() { cheatStatus('Could not save cheat settings.', true); }); }
 $('#saveCheatSection').on('click', function() { saveCheatSettings({enabled: $('#cheatSectionEnabled').prop('checked')}, 'CyberFoil setting saved.'); });
 $('#saveCheatSyncSource').on('click', function() { saveCheatSettings({sync_url: $('#cheatSyncUrl').val()}, 'Sync source saved.'); });
