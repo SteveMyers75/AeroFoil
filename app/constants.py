@@ -164,6 +164,12 @@ DEFAULT_SETTINGS = {
         "host": "",
         "hauth": "",
     },
+    "cheats": {
+        "enabled": True,
+        # Optional URL to a ZIP archive whose entries include
+        # <title-id>/<build-id>.txt.  Leave empty to use manual imports only.
+        "sync_url": "",
+    },
     "content_filter": {
         # When a user has an age cap (max_rating) set, also hide/block titles
         # that have no known rating (homebrew, unidentified files, or titles

@@ -75,6 +75,10 @@
                                         <label class="form-check-label" for="checkboxNewUserBackupAccess">Backup</label>
                                     </div>
                                     <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="checkboxNewUserCheatAccess" checked>
+                                        <label class="form-check-label" for="checkboxNewUserCheatAccess">Cheats</label>
+                                    </div>
+                                    <div class="form-check">
                                         <input class="form-check-input" type="checkbox" id="checkboxNewUserAdminAccess">
                                         <label class="form-check-label" for="checkboxNewUserAdminAccess">Admin</label>
                                     </div>
@@ -168,6 +172,10 @@
                                         <div class="form-check">
                                             <input class="form-check-input" type="checkbox" id="checkboxEditUserBackupAccess">
                                             <label class="form-check-label" for="checkboxEditUserBackupAccess">Backup</label>
+                                        </div>
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" id="checkboxEditUserCheatAccess">
+                                            <label class="form-check-label" for="checkboxEditUserCheatAccess">Cheats</label>
                                         </div>
                                         <div class="form-check">
                                             <input class="form-check-input" type="checkbox" id="checkboxEditUserAdminAccess">
@@ -465,8 +473,8 @@
     }
 
     function _permsScore(user) {
-        // Sort admins first, then shop, then backup.
-        return (user['admin_access'] ? 4 : 0) + (user['shop_access'] ? 2 : 0) + (user['backup_access'] ? 1 : 0);
+        // Sort admins first, then shop, cheat access, and backup.
+        return (user['admin_access'] ? 8 : 0) + (user['shop_access'] ? 4 : 0) + (user['cheat_access'] ? 2 : 0) + (user['backup_access'] ? 1 : 0);
     }
 
     const RATING_LABELS = { '0': 'E', '10': 'E10+', '13': 'T', '17': 'M', '18': 'AO' };
@@ -668,6 +676,7 @@
             const isAdmin = !!user['admin_access'];
             const isShop = !!user['shop_access'];
             const isBackup = !!user['backup_access'];
+            const isCheat = !!user['cheat_access'];
 
             let badges = '';
             if (user['frozen']) {
@@ -681,6 +690,9 @@
             }
             if (isBackup) {
                 badges += '<span class="badge text-bg-info me-1">Backup</span>';
+            }
+            if (isCheat) {
+                badges += '<span class="badge text-bg-primary me-1">Cheats</span>';
             }
             if (!badges) {
                 badges = '<span class="badge text-bg-secondary">None</span>';
@@ -714,7 +726,7 @@
                 + '<div class="user-actions">'
                 + '<button type="button" class="btn btn-outline-info btn-sm" data-bs-toggle="modal" data-bs-target="#editUserModal" data-bs-title="Modify user" data-bs-placement="top"'
                 + ' data-bs-id="' + user['id'] + '" data-bs-user="' + _escapeHtml(user['user']) + '"'
-                + ' data-bs-admin="' + user['admin_access'] + '" data-bs-shop="' + user['shop_access'] + '" data-bs-backup="' + user['backup_access'] + '"'
+                + ' data-bs-admin="' + user['admin_access'] + '" data-bs-shop="' + user['shop_access'] + '" data-bs-backup="' + user['backup_access'] + '" data-bs-cheats="' + user['cheat_access'] + '"'
                 + ' data-bs-max-rating="' + (user['max_rating'] === null || user['max_rating'] === undefined ? '' : user['max_rating']) + '">'
                 + '<i class="bi bi-pencil-square"></i></button>'
                 + '<button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#userHistoryModal" data-bs-title="View history" data-bs-placement="top"'
@@ -854,9 +866,11 @@
         if (this.checked != false) {
             $('#checkboxNewUserShopAccess').prop('checked', true).attr("disabled", true);
             $('#checkboxNewUserBackupAccess').prop('checked', true).attr("disabled", true);
+            $('#checkboxNewUserCheatAccess').prop('checked', true).attr("disabled", true);
         } else {
             $('#checkboxNewUserShopAccess').attr("disabled", false);
             $('#checkboxNewUserBackupAccess').attr("disabled", false);
+            $('#checkboxNewUserCheatAccess').attr("disabled", false);
         }
     });
 
@@ -864,9 +878,11 @@
         if (this.checked != false) {
             $('#checkboxEditUserShopAccess').prop('checked', true).attr("disabled", true);
             $('#checkboxEditUserBackupAccess').prop('checked', true).attr("disabled", true);
+            $('#checkboxEditUserCheatAccess').prop('checked', true).attr("disabled", true);
         } else {
             $('#checkboxEditUserShopAccess').attr("disabled", false);
             $('#checkboxEditUserBackupAccess').attr("disabled", false);
+            $('#checkboxEditUserCheatAccess').attr("disabled", false);
         }
     });
 
@@ -876,6 +892,7 @@
         const password = getInputVal("inputNewUserPassword") || '';
         const shop_access = getCheckboxStatus("checkboxNewUserShopAccess");
         const backup_access = getCheckboxStatus("checkboxNewUserBackupAccess");
+        const cheat_access = getCheckboxStatus("checkboxNewUserCheatAccess");
         const admin_access = getCheckboxStatus("checkboxNewUserAdminAccess");
 
         if (!user) {
@@ -910,6 +927,7 @@
             password: password,
             shop_access: shop_access,
             backup_access: backup_access,
+            cheat_access: cheat_access,
             admin_access: admin_access,
             max_rating: max_rating,
         }
@@ -945,6 +963,7 @@
             const adminAccess = button.getAttribute('data-bs-admin') === 'true'
             const shopAccess = button.getAttribute('data-bs-shop') === 'true'
             const backupAccess = button.getAttribute('data-bs-backup') === 'true'
+            const cheatAccess = button.getAttribute('data-bs-cheats') === 'true'
             const maxRating = button.getAttribute('data-bs-max-rating')
 
             setInputVal("editUserNameInput", editOriginalUser)
@@ -954,19 +973,23 @@
             $("#checkboxEditUserAdminAccess").prop("checked", adminAccess)
             $("#checkboxEditUserShopAccess").prop("checked", adminAccess || shopAccess)
             $("#checkboxEditUserBackupAccess").prop("checked", adminAccess || backupAccess)
+            $("#checkboxEditUserCheatAccess").prop("checked", adminAccess || cheatAccess)
 
             if (adminAccess) {
                 $("#checkboxEditUserShopAccess").prop('checked', true).attr("disabled", true);
                 $("#checkboxEditUserBackupAccess").prop('checked', true).attr("disabled", true);
+                $("#checkboxEditUserCheatAccess").prop('checked', true).attr("disabled", true);
             } else {
                 $("#checkboxEditUserShopAccess").attr("disabled", false);
                 $("#checkboxEditUserBackupAccess").attr("disabled", false);
+                $("#checkboxEditUserCheatAccess").attr("disabled", false);
             }
             $("#editUserNameInput").attr("disabled", false);
             $("#checkboxEditUserAdminAccess").attr("disabled", false);
             if (!adminAccess) {
                 $("#checkboxEditUserShopAccess").attr("disabled", false);
                 $("#checkboxEditUserBackupAccess").attr("disabled", false);
+                $("#checkboxEditUserCheatAccess").attr("disabled", false);
             }
             $('#editUserNameInput').removeClass('is-invalid');
             $('#editUserNameFeedback').text('Username is required.');
@@ -979,6 +1002,7 @@
         const user = (getInputVal("editUserNameInput") || '').trim();
         const shop_access = getCheckboxStatus("checkboxEditUserShopAccess")
         const backup_access = getCheckboxStatus("checkboxEditUserBackupAccess")
+        const cheat_access = getCheckboxStatus("checkboxEditUserCheatAccess")
         const admin_access = getCheckboxStatus("checkboxEditUserAdminAccess")
 
         if (!user) {
@@ -1006,6 +1030,7 @@
             user: user,
             shop_access: shop_access,
             backup_access: backup_access,
+            cheat_access: cheat_access,
             admin_access: admin_access,
             max_rating: max_rating,
         }

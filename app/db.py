@@ -181,6 +181,7 @@ class User(UserMixin, db.Model):
     admin_access = db.Column(db.Boolean)
     shop_access = db.Column(db.Boolean)
     backup_access = db.Column(db.Boolean)
+    cheat_access = db.Column(db.Boolean, nullable=False, default=True)
     frozen = db.Column(db.Boolean, default=False)
     frozen_message = db.Column(db.String)
     # ESRB age cap (TitleDB minimum-age int). NULL = unrestricted.
@@ -200,6 +201,9 @@ class User(UserMixin, db.Model):
 
     def has_backup_access(self):
         return self.backup_access
+
+    def has_cheat_access(self):
+        return bool(self.cheat_access) and self.has_shop_access()
     
     def has_admin_access(self):
         return self.admin_access
@@ -211,6 +215,8 @@ class User(UserMixin, db.Model):
             return self.has_shop_access()
         elif access == 'backup':
             return self.has_backup_access()
+        elif access == 'cheats':
+            return self.has_cheat_access()
 
 
 class TitleRequests(db.Model):

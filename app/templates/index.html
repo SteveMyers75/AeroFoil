@@ -2413,9 +2413,41 @@
             `
             : '<div class="text-muted py-2">No DLC entries available.</div>';
 
-        const defaultToDlcTab = String(game.app_type || '').toUpperCase() === 'DLC';
+        const availableCheats = Array.isArray(game.cheats) ? game.cheats : [];
+        const cheatRows = availableCheats.map(cheat => `
+            <tr>
+                <td><code>${escapeHtml(String(cheat.build_id || ''))}</code></td>
+                <td>${escapeHtml(String(cheat.note || '—'))}</td>
+                <td>${formatBytes(cheat.size || 0)}</td>
+                <td class="text-end">
+                    <a class="btn btn-outline-primary btn-sm" href="${escapeHtml(String(cheat.url || ''))}" download>
+                        <i class="bi bi-download"></i> Download
+                    </a>
+                </td>
+            </tr>
+        `).join('');
+        const cheatsTabHtml = availableCheats.length
+            ? `
+                <div class="details-pane-stack">
+                    <div class="details-list-scroll">
+                        <table class="table table-sm table-striped mb-0">
+                            <thead>
+                                <tr>
+                                    <th scope="col">Build ID</th>
+                                    <th scope="col">Note</th>
+                                    <th scope="col">Size</th>
+                                    <th scope="col" class="text-end">Download</th>
+                                </tr>
+                            </thead>
+                            <tbody>${cheatRows}</tbody>
+                        </table>
+                    </div>
+                </div>
+            `
+            : '<div class="text-muted py-2">No cheats are available for this title.</div>';
+        const defaultToDlcTab = dlcList.length > 0 && String(game.app_type || '').toUpperCase() === 'DLC';
 
-        if (dlcList.length > 0) {
+        if (dlcList.length > 0 || availableCheats.length > 0) {
             $('#detailsVersions').html(`
                 ${actionRow}
                 ${customSearchRow}
@@ -2427,11 +2459,20 @@
                             Updates <span class="badge rounded-pill text-bg-secondary ms-1">${versions.length}</span>
                         </button>
                     </li>
+                    ${dlcList.length ? `
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link ${defaultToDlcTab ? 'active' : ''}" id="details-dlc-tab" data-bs-toggle="tab"
+                                data-bs-target="#details-dlc-pane" type="button" role="tab"
+                                aria-controls="details-dlc-pane" aria-selected="${defaultToDlcTab ? 'true' : 'false'}">
+                                DLC <span class="badge rounded-pill text-bg-secondary ms-1">${dlcList.length}</span>
+                            </button>
+                        </li>
+                    ` : ''}
                     <li class="nav-item" role="presentation">
-                        <button class="nav-link ${defaultToDlcTab ? 'active' : ''}" id="details-dlc-tab" data-bs-toggle="tab"
-                            data-bs-target="#details-dlc-pane" type="button" role="tab"
-                            aria-controls="details-dlc-pane" aria-selected="${defaultToDlcTab ? 'true' : 'false'}">
-                            DLC <span class="badge rounded-pill text-bg-secondary ms-1">${dlcList.length}</span>
+                        <button class="nav-link" id="details-cheats-tab" data-bs-toggle="tab"
+                            data-bs-target="#details-cheats-pane" type="button" role="tab"
+                            aria-controls="details-cheats-pane" aria-selected="false">
+                            Cheats <span class="badge rounded-pill text-bg-secondary ms-1">${availableCheats.length}</span>
                         </button>
                     </li>
                 </ul>
@@ -2439,8 +2480,13 @@
                     <div class="tab-pane fade ${defaultToDlcTab ? '' : 'show active'} details-tab-pane" id="details-updates-pane" role="tabpanel" aria-labelledby="details-updates-tab">
                         ${updatesTabHtml}
                     </div>
-                    <div class="tab-pane fade ${defaultToDlcTab ? 'show active' : ''} details-tab-pane" id="details-dlc-pane" role="tabpanel" aria-labelledby="details-dlc-tab">
-                        ${dlcTabHtml}
+                    ${dlcList.length ? `
+                        <div class="tab-pane fade ${defaultToDlcTab ? 'show active' : ''} details-tab-pane" id="details-dlc-pane" role="tabpanel" aria-labelledby="details-dlc-tab">
+                            ${dlcTabHtml}
+                        </div>
+                    ` : ''}
+                    <div class="tab-pane fade details-tab-pane" id="details-cheats-pane" role="tabpanel" aria-labelledby="details-cheats-tab">
+                        ${cheatsTabHtml}
                     </div>
                 </div>
             `);
