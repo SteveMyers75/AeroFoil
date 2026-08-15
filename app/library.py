@@ -1240,6 +1240,16 @@ def _parse_command_args(command):
             args = shlex.split(text, posix=(os.name != 'nt'))
         except ValueError as e:
             raise ValueError(f'Invalid conversion command syntax: {e}') from e
+    if os.name == 'nt':
+        # shlex with posix=False preserves the quotes around Windows paths and
+        # quoted Python -c snippets. subprocess then treats those quotes as
+        # literal characters in the executable/path and raises WinError 2.
+        args = [
+            arg[1:-1]
+            if len(arg) >= 2 and arg[0] == arg[-1] and arg[0] in ('"', "'")
+            else arg
+            for arg in args
+        ]
     if not args:
         raise ValueError('Conversion command is empty.')
     return args

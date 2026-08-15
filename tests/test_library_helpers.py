@@ -32,6 +32,7 @@ try:
         _finalize_staged_conversion_output,
         _format_nsz_command,
         _iter_library_files,
+        _parse_command_args,
         _pending_cleanup_roots,
         _pending_organize_paths,
         _sanitize_component,
@@ -235,6 +236,29 @@ class LibraryHelperTests(unittest.TestCase):
         )
         self.assertIn('-t 4', command)
         self.assertIn('input.nsp', command)
+
+    def test_parse_command_args_strips_windows_wrapping_quotes(self):
+        command = (
+            '"C:\\Program Files\\Python\\python.exe" '
+            '-c "import nsz; nsz.main()" '
+            '--keys "C:\\AeroFoil\\keys.txt" '
+            '"C:\\Library\\Example Title.nsp"'
+        )
+
+        with patch('app.library.os.name', 'nt'):
+            args = _parse_command_args(command)
+
+        self.assertEqual(
+            args,
+            [
+                'C:\\Program Files\\Python\\python.exe',
+                '-c',
+                'import nsz; nsz.main()',
+                '--keys',
+                'C:\\AeroFoil\\keys.txt',
+                'C:\\Library\\Example Title.nsp',
+            ],
+        )
 
     def test_build_staging_output_path_disabled_returns_final_output(self):
         source = '/library/Game.nsp'
