@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 import importlib.util
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, joinedload
 from app.constants import *
 from app.db import *
 from app import titles as titles_lib
@@ -714,9 +714,12 @@ def update_titles():
                 # check up_to_date - find highest owned update version
                 owned_update_apps = [
                     app for app in title_apps
-                    if app.app_type == APP_TYPE_UPD and bool(app.owned)
+                    if app.app_type == APP_TYPE_UPD and bool(app.owned) and not bool(getattr(app, 'ignored', False))
                 ]
-                available_update_apps = [app for app in title_apps if app.app_type == APP_TYPE_UPD]
+                available_update_apps = [
+                    app for app in title_apps
+                    if app.app_type == APP_TYPE_UPD and not bool(getattr(app, 'ignored', False))
+                ]
 
                 if not available_update_apps:
                     up_to_date = True
@@ -728,7 +731,10 @@ def update_titles():
                     up_to_date = highest_owned_version >= highest_available_version
 
                 # check complete - latest version of all available DLC are owned
-                available_dlc_apps = [app for app in title_apps if app.app_type == APP_TYPE_DLC]
+                available_dlc_apps = [
+                    app for app in title_apps
+                    if app.app_type == APP_TYPE_DLC and not bool(getattr(app, 'ignored', False))
+                ]
                 if not available_dlc_apps:
                     complete = True
                 else:
@@ -797,6 +803,7 @@ def _compute_library_cache_state_token():
                     COALESCE((SELECT COUNT(*) FROM apps), 0),
                     COALESCE((SELECT MAX(id) FROM apps), 0),
                     COALESCE((SELECT SUM(CASE WHEN owned THEN 1 ELSE 0 END) FROM apps), 0),
+                    COALESCE((SELECT SUM(CASE WHEN ignored THEN 1 ELSE 0 END) FROM apps), 0),
                     COALESCE((SELECT SUM(COALESCE(app_version_num, 0)) FROM apps), 0),
                     COALESCE((SELECT SUM(
                         (COALESCE(title_id, 0) + COALESCE(app_version_num, 0))
@@ -865,7 +872,7 @@ def get_library_cache_state_token(force_refresh=False):
 
 
 # Bump this when the cached library schema changes.
-LIBRARY_CACHE_VERSION = 6
+LIBRARY_CACHE_VERSION = 8
 
 def is_library_unchanged():
     cache_path = Path(LIBRARY_CACHE_FILE)
@@ -930,6 +937,27 @@ def generate_library():
     try:
         with titles_lib.titledb_session():
             apps_snapshot = get_all_apps()
+            snapshot_app_ids = {
+                str(entry.get('app_id') or '').strip().upper()
+                for entry in apps_snapshot
+                if str(entry.get('app_id') or '').strip()
+            }
+            apps_lookup = {}
+            if snapshot_app_ids:
+                apps_with_files = (
+                    db.session.query(Apps)
+                    .options(joinedload(Apps.files))
+                    .filter(Apps.app_id.in_(snapshot_app_ids))
+                    .all()
+                )
+                apps_lookup = {
+                    (
+                        str(app.app_id or '').strip().upper(),
+                        str(app.app_version or '0').strip(),
+                    ): app
+                    for app in apps_with_files
+                    if str(app.app_id or '').strip()
+                }
             logger.info(f'Found {len(apps_snapshot)} apps in database')
 
             apps_by_title = {}
@@ -959,6 +987,21 @@ def generate_library():
 
             for app_entry in apps_snapshot:
                 title = dict(app_entry)
+                app_lookup_key = (
+                    str(title.get('app_id') or '').strip().upper(),
+                    str(title.get('app_version') or '0').strip(),
+                )
+                app_obj = apps_lookup.get(app_lookup_key)
+                file_list = []
+                if app_obj:
+                    for file_entry in app_obj.files:
+                        file_list.append({
+                            'filepath': file_entry.filepath,
+                            'filename': file_entry.filename,
+                            'folder': file_entry.folder,
+                            'size': file_entry.size,
+                        })
+                title['files'] = file_list
                 has_none_value = any(value is None for value in title.values())
                 if has_none_value:
                     logger.warning(f'File contains None value, it will be skipped: {title}')
@@ -1000,7 +1043,7 @@ def generate_library():
                             'release_date': version_release_dates.get(app_version, 'Unknown')
                         })
 
-                    title['version'] = sorted(version_list, key=lambda x: x['version'])
+                    title['version'] = sorted(version_list, key=lambda x: x['version'], reverse=True)
                     title['title_id_name'] = title['name']
 
                 elif title['app_type'] == APP_TYPE_DLC:
@@ -1020,7 +1063,7 @@ def generate_library():
                             'release_date': 'Unknown'
                         })
 
-                    title['version'] = sorted(version_list, key=lambda x: x['version'])
+                    title['version'] = sorted(version_list, key=lambda x: x['version'], reverse=True)
                     title['owned'] = any(app.get('owned') for app in dlc_apps)
 
                     if dlc_apps:
@@ -1078,6 +1121,16 @@ def _sanitize_relative_path(path_value, fallback='Other'):
     if not clean_parts:
         return _sanitize_component(fallback)
     return os.path.join(*clean_parts)
+
+def _is_base_dir_template(rendered):
+    # True when a rendered folder template refers only to the current/base
+    # directory (e.g. ".", "./", ".."). Such a template means "no subfolder";
+    # the file belongs directly in the library base directory. Without this the
+    # "." used by the Flat preset would be stripped by _sanitize_relative_path
+    # and fall through to the 'Other' fallback.
+    raw = str(rendered or '').strip().replace('\\', '/')
+    parts = [part for part in raw.split('/') if part]
+    return bool(parts) and all(part in ('.', '..') for part in parts)
 
 def _safe_int(value, default=0):
     try:
@@ -1187,6 +1240,16 @@ def _parse_command_args(command):
             args = shlex.split(text, posix=(os.name != 'nt'))
         except ValueError as e:
             raise ValueError(f'Invalid conversion command syntax: {e}') from e
+    if os.name == 'nt':
+        # shlex with posix=False preserves the quotes around Windows paths and
+        # quoted Python -c snippets. subprocess then treats those quotes as
+        # literal characters in the executable/path and raises WinError 2.
+        args = [
+            arg[1:-1]
+            if len(arg) >= 2 and arg[0] == arg[-1] and arg[0] in ('"', "'")
+            else arg
+            for arg in args
+        ]
     if not args:
         raise ValueError('Conversion command is empty.')
     return args
@@ -1594,15 +1657,22 @@ def _build_destination(library_path, file_entry, app, title_name, dlc_name, acti
 
     folder_rel = _render_template(folder_tpl, template_vars_common)
     if not folder_rel:
+        # No folder template configured -> default to a per-title folder.
         folder_rel = _sanitize_component(f"{safe_title} [{safe_title_id}]")
-    folder_rel = _sanitize_relative_path(folder_rel, fallback='Other')
+        folder_rel = _sanitize_relative_path(folder_rel, fallback='Other')
+    elif _is_base_dir_template(folder_rel):
+        # Template explicitly targets the library base directory (e.g. "." in the
+        # Flat preset) -> place the file directly under library_path, no subfolder.
+        folder_rel = ''
+    else:
+        folder_rel = _sanitize_relative_path(folder_rel, fallback='Other')
 
     filename = _render_template(filename_tpl, template_vars_filename)
     if not filename:
         filename = file_entry.filename or f"{safe_title} [{safe_title_id}] [UNKNOWN].{safe_ext}"
     filename = _sanitize_component(filename)
 
-    folder = os.path.join(library_path, folder_rel)
+    folder = os.path.join(library_path, folder_rel) if folder_rel else library_path
     return folder, filename
 
 def organize_library(dry_run=False, verbose=False, detail_limit=200):
@@ -1612,6 +1682,7 @@ def organize_library(dry_run=False, verbose=False, detail_limit=200):
         'skipped': 0,
         'folders_deleted': 0,
         'folders_failed': 0,
+        'mutated': False,
         'errors': [],
         'details': []
     }
@@ -1751,10 +1822,12 @@ def organize_library(dry_run=False, verbose=False, detail_limit=200):
                                 app.owned = len(app.files) > 0
                             db.session.delete(file_entry)
                             db.session.commit()
+                            results['mutated'] = True
                         else:
                             update_file_path(library_path, old_path, dest_path)
                         if os.path.exists(old_path) and os.path.normpath(old_path) != os.path.normpath(dest_path):
                             os.remove(old_path)
+                            results['mutated'] = True
                         results['skipped'] += 1
                         add_detail(f"Skip duplicate; kept existing: {dest_path}.")
                         continue
@@ -1767,6 +1840,7 @@ def organize_library(dry_run=False, verbose=False, detail_limit=200):
                         shutil.move(old_path, dest_path)
                         update_file_path(library_path, old_path, dest_path)
                         results['moved'] += 1
+                        results['mutated'] = True
                         add_detail(f"Moved: {old_path} -> {dest_path}.")
                     except Exception as e:
                         logger.error(f"Failed to move {file_entry.filepath}: {e}")
@@ -1797,6 +1871,7 @@ def organize_library(dry_run=False, verbose=False, detail_limit=200):
                 try:
                     os.rmdir(d)
                     results['folders_deleted'] += 1
+                    results['mutated'] = True
                     add_detail(f"Deleted empty folder: {d}.")
                 except OSError:
                     results['folders_failed'] += 1
@@ -2245,7 +2320,19 @@ def delete_duplicates(dry_run=False, verbose=False, detail_limit=200):
             results['details'].append(message)
             detail_count += 1
 
-    def file_rank(file_entry):
+    def _filename_duplicate_rank(app, file_entry):
+        filename = os.path.basename(str(getattr(file_entry, 'filepath', '') or ''))
+        if filename.lower().endswith('.hdf'):
+            filename = filename[:-4]
+        detected_app_id = str(titles_lib.get_app_id_from_filename(filename) or '').strip().upper()
+        detected_version = _safe_int(titles_lib.get_version_from_filename(filename), default=-1)
+        current_app_id = str(getattr(app, 'app_id', '') or '').strip().upper()
+        app_id_matches = 1 if not detected_app_id or detected_app_id == current_app_id else 0
+        version_rank = detected_version if detected_version >= 0 else _safe_int(getattr(app, 'app_version', 0))
+        return app_id_matches, version_rank
+
+    def file_rank(app, file_entry):
+        app_id_matches, version_rank = _filename_duplicate_rank(app, file_entry)
         ext = str(file_entry.extension or '').strip().lower()
         ext_priority = {
             'nsz': 5,
@@ -2259,7 +2346,7 @@ def delete_duplicates(dry_run=False, verbose=False, detail_limit=200):
                 mtime = int(os.path.getmtime(file_entry.filepath))
         except Exception:
             mtime = 0
-        return (ext_priority, mtime, _safe_int(file_entry.size), _safe_int(file_entry.id))
+        return (app_id_matches, version_rank, ext_priority, mtime, _safe_int(file_entry.size), _safe_int(file_entry.id))
 
     apps = Apps.query.filter(Apps.owned.is_(True)).all()
     for app in apps:
@@ -2267,7 +2354,7 @@ def delete_duplicates(dry_run=False, verbose=False, detail_limit=200):
         if len(app_files_list) <= 1:
             continue
 
-        ordered = sorted(app_files_list, key=file_rank, reverse=True)
+        ordered = sorted(app_files_list, key=lambda file_entry: file_rank(app, file_entry), reverse=True)
         keeper = ordered[0]
         duplicates = ordered[1:]
         add_detail(
@@ -2299,6 +2386,7 @@ def delete_duplicates(dry_run=False, verbose=False, detail_limit=200):
                 if dup_filepath:
                     delete_file_by_filepath(dup_filepath)
                 results['deleted'] += 1
+                results['mutated'] = True
                 add_detail(
                     f"Deleted duplicate {app.app_id} v{app.app_version}: "
                     f"{dup_filepath} (ext={dup_ext}, size={dup_size})."
@@ -2319,6 +2407,7 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
         'success': True,
         'converted': 0,
         'skipped': 0,
+        'mutated': False,
         'errors': [],
         'details': []
     }
@@ -2518,6 +2607,7 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                     app.owned = True
                 _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                 db.session.commit()
+                results['mutated'] = True
                 add_detail(f"Converted and replaced: {old_path} -> {output_file}.")
             else:
                 library_path = get_library_path(source_library_id)
@@ -2533,6 +2623,7 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                         app.owned = True
                     _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                     db.session.commit()
+                    results['mutated'] = True
                     add_detail(f"Converted output already indexed: {output_file}.")
                 else:
                     new_file = Files(
@@ -2557,6 +2648,7 @@ def convert_to_nsz(command_template, delete_original=True, dry_run=False, verbos
                         app.owned = True
                     _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                     db.session.commit()
+                    results['mutated'] = True
                     add_detail(f"Converted: {source_path} -> {output_file}.")
 
             results['converted'] += 1
@@ -2601,6 +2693,7 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
         'success': True,
         'converted': 0,
         'skipped': 0,
+        'mutated': False,
         'errors': [],
         'details': []
     }
@@ -2776,6 +2869,7 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
                 app.owned = True
             _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
             db.session.commit()
+            results['mutated'] = True
             if verbose:
                 results['details'].append(f"Converted and replaced: {old_path} -> {output_file}.")
         else:
@@ -2792,6 +2886,7 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
                     app.owned = True
                 _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                 db.session.commit()
+                results['mutated'] = True
                 if verbose:
                     results['details'].append(f"Converted output already indexed: {output_file}.")
             else:
@@ -2817,6 +2912,7 @@ def convert_single_to_nsz(file_id, command_template, delete_original=True, dry_r
                     app.owned = True
                 _sync_apps_owned_flags(app_ids=[app.id for app in source_apps if app and app.id is not None])
                 db.session.commit()
+                results['mutated'] = True
             if verbose:
                 results['details'].append(f"Converted: {source_path} -> {output_file}.")
 
