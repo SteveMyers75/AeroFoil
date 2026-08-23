@@ -944,20 +944,27 @@ def generate_library():
             }
             apps_lookup = {}
             if snapshot_app_ids:
-                apps_with_files = (
-                    db.session.query(Apps)
-                    .options(joinedload(Apps.files))
-                    .filter(Apps.app_id.in_(snapshot_app_ids))
-                    .all()
-                )
-                apps_lookup = {
-                    (
-                        str(app.app_id or '').strip().upper(),
-                        str(app.app_version or '0').strip(),
-                    ): app
-                    for app in apps_with_files
-                    if str(app.app_id or '').strip()
-                }
+                # Convert set to list for slicing
+                all_ids = list(snapshot_app_ids)
+                chunk_size = 500  # Stays safely under SQLite's variable limits     
+                apps_with_files = []
+            for i in range(0, len(all_ids), chunk_size):
+                chunk = all_ids[i:i + chunk_size]
+            batch_apps = (
+                db.session.query(Apps)
+                .options(joinedload(Apps.files))
+                .filter(Apps.app_id.in_(chunk))
+                .all()
+                          )
+            apps_with_files.extend(batch_apps)
+            apps_lookup = {
+            (
+                str(app.app_id or '').strip().upper(),
+                str(app.app_version or '0').strip(),
+            ): app
+            for app in apps_with_files
+            if str(app.app_id or '').strip()
+        }
             logger.info(f'Found {len(apps_snapshot)} apps in database')
 
             apps_by_title = {}
