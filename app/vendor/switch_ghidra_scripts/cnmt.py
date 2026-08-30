@@ -45,6 +45,7 @@ class ContentMetaType(IntEnum):
     ADD_ON_CONTENT = 0x82
     DELTA = 0x83
     DATA_PATCH = 0x84
+    DATA_PATCH_ALT = 0x20
 
 
 class ContentType(IntEnum):
