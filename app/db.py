@@ -27,7 +27,7 @@ migrate = Migrate()
 
 
 def utc_now():
-    return datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+    return datetime.datetime.utcnow()
 
 # Alembic functions
 def get_alembic_cfg():
